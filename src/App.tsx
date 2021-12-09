@@ -27,6 +27,7 @@ function App() {
   const [intervalInput, setIntervalInput] = useState(60);
   const [showCodeOwnerPRs, setShowCodeOwnerPRs] = useState(false);
   const [showDependabotPRs, toggleDependabotPRs] = useState(true);
+  const [showMasterPRs, toggleMasterPRs] = useState(true);
 
   const [config, setConfig] = useState(() => ({
     token: localStorage.getItem('PR_RADIATOR_TOKEN') ?? '',
@@ -64,6 +65,10 @@ function App() {
       if (event.keyCode === 68) {
         toggleDependabotPRs(!showDependabotPRs);
       }
+      // 'm' toggles dependabot PR visibility
+      if (event.keyCode === 77) {
+        toggleMasterPRs(!showMasterPRs);
+      }
       // '\' backslash clears repo names to trigger refetching
       if (event.keyCode === 220) {
         localStorage.removeItem('PR_RADIATOR_REPOS');
@@ -72,7 +77,7 @@ function App() {
     }
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
-  }, [showCodeOwnerPRs, showDependabotPRs, config]);
+  }, [showCodeOwnerPRs, showDependabotPRs, showMasterPRs, config]);
 
   useEffect(() => {
     async function getTeamRepos(token: string, owner: string, team: string) {
@@ -123,8 +128,9 @@ function App() {
   const isViewerParticipant = (participants: any) => participants.nodes.some((participant: any) => participant.isViewer)
   const filterCombined = (pr: any) => !showCodeOwnerPRs || (isViewerCodeOwner(pr.reviewRequests) || isViewerParticipant(pr.participants));
   const filterDependabot = (pr: any) => !showDependabotPRs || pr.author.login !== 'dependabot';
+  const filterMasterPRs = (pr: any) => showMasterPRs || pr.baseRefName !== 'master';
   const combinedPRs = PRs.length > 0 ? PRs.filter(filterCombined): null;
-  const displayPRs = combinedPRs && combinedPRs.length > 0 ? combinedPRs.filter(filterDependabot).map(pr => <PR key={pr.url} pr={pr} />) : null;
+  const displayPRs = combinedPRs && combinedPRs.length > 0 ? combinedPRs.filter(filterDependabot).filter(filterMasterPRs).map(pr => <PR key={pr.url} pr={pr} />) : null;
   const handleOnChange = (e: React.ChangeEvent<HTMLInputElement>) => setIntervalInput(parseInt(e.target.value));
 
   if (!config.token || !config.owner || !config.team) {
