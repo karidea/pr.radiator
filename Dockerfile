@@ -1,4 +1,4 @@
-FROM node:alpine AS BUILD_IMAGE
+FROM node:lts-alpine AS BUILD_IMAGE
 
 WORKDIR /usr/src/app
 
@@ -11,13 +11,10 @@ COPY . .
 
 RUN npm run build
 
-FROM node:alpine
+FROM nginx:alpine
 
-WORKDIR /usr/src/app
+WORKDIR /usr/share/nginx/html
 
-RUN npm install -g serve
+RUN rm -rf ./*
 
 COPY --from=BUILD_IMAGE /usr/src/app/build .
-
-EXPOSE 3000
-CMD ["serve", "-l", "3000"]
