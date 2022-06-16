@@ -28,13 +28,13 @@ const RepositoriesQuery = (owner: string, team: string, next: string | null) => 
 const BatchQueryPRs = (owner: string, repos: string[]) => {
   const batchedRepos = repos.map((repo, index) => {
     const repoFieldAlias = 'alias' +  index;
-    return `${repoFieldAlias}:repository(owner: "${owner}", name: "${repo}") {name isArchived pullRequests(first: 20, states: OPEN) {nodes {
+    return `${repoFieldAlias}:repository (owner: "${owner}", name: "${repo}") { name isArchived pullRequests(first: 20, states: OPEN) { nodes {
 		title url createdAt baseRefName headRefOid isDraft number
 		participants (first: 10) { nodes { isViewer login }}
-		reviewRequests(first:20) {nodes {asCodeOwner requestedReviewer { __typename ... on User { login isViewer }}}}
+		reviewRequests (first:20) { nodes {requestedReviewer { __typename ... on User { login isViewer } ... on Team { slug members { nodes { login isViewer } } }}}}
 		repository { name }
 		author { login }
-		comments(first: 50) {nodes {
+		comments (first: 50) {nodes {
       createdAt author { login }
     }}
 		reviews(first: 50) {nodes {
