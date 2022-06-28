@@ -46,15 +46,18 @@ const getAgeString = (createdAt: Date) => {
   return 'over-week-old';
 }
 
-const getCommitState = (headRefOid: string, timeline: any) => {
-  const commit = timeline.nodes.find((commit: any) => commit.oid === headRefOid);
+const getCommitState = (headRefOid: string, timelineItems: any) => {
+  const node = timelineItems.nodes.find((node: any) => {
+    return node.commit.oid === headRefOid;
+  });
   const [checkmark, circle, cross] = ['\u2714', '\u25cf', '\u2613'];
+  const conclusion = node.commit?.checkSuites?.nodes[0]?.conclusion ? node.commit?.checkSuites?.nodes[0]?.conclusion : node.commit.status;
 
-  if (!commit?.status) {
+  if (!conclusion) {
     return <span className="missing">-</span>;
-  } else if (commit.status.state === 'SUCCESS') {
+  } else if (conclusion === 'SUCCESS') {
     return <span className="success">{checkmark}</span>;
-  } else if (commit.status.state === 'PENDING') {
+  } else if (conclusion === 'STALE') {
     return <span className="pending">{circle}</span>;
   }
 
@@ -79,11 +82,11 @@ const TimelineEvent = (props: Event) => {
 }
 
 const PR = (props: any) => {
-  const { createdAt, reviews, comments, baseRefName, author, headRefOid, timeline, url, repository, title } = props.pr;
+  const { createdAt, reviews, comments, baseRefName, author, headRefOid, timelineItems, url, repository, title } = props.pr;
   const createdAtDate = new Date(createdAt);
   const events = combineReviewsAndComments(reviews, comments);
   const timeDistance = <span title={formatRFC3339(createdAtDate)}>{formatDistanceToNowStrict(createdAtDate)} ago</span>;
-  const commitState = getCommitState(headRefOid, timeline);
+  const commitState = getCommitState(headRefOid, timelineItems);
 
   return (
     <div className={getAgeString(createdAtDate)}>

@@ -28,7 +28,7 @@ const RepositoriesQuery = (owner: string, team: string, next: string | null) => 
 const BatchQueryPRs = (owner: string, repos: string[]) => {
   const batchedRepos = repos.map((repo, index) => {
     const repoFieldAlias = 'alias' +  index;
-    return `${repoFieldAlias}:repository (owner: "${owner}", name: "${repo}") { name isArchived pullRequests(first: 20, states: OPEN) { nodes {
+    return `${repoFieldAlias}:repository (owner: "${owner}", name: "${repo}") { name isArchived pullRequests(last: 4, states: OPEN) { nodes {
 		title url createdAt baseRefName headRefOid isDraft number
 		participants (first: 10) { nodes { isViewer login }}
 		reviewRequests (first:20) { nodes {requestedReviewer { __typename ... on User { login isViewer } ... on Team { slug members { nodes { login isViewer } } }}}}
@@ -40,9 +40,9 @@ const BatchQueryPRs = (owner: string, repos: string[]) => {
 		reviews(first: 50) {nodes {
       state createdAt author { login }
     }}
-    timeline (first: 50) {nodes {
-      typename: __typename ... on Commit { oid message status { state } }
-    }}
+    timelineItems (first: 50, itemTypes: PULL_REQUEST_COMMIT) {  nodes {  __typename ... on PullRequestCommit { commit {
+oid checkSuites (last: 1) { nodes { conclusion }} message status { state }
+    }}}}
 }}}`;
   }).join(' ');
 
