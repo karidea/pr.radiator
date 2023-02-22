@@ -82,7 +82,7 @@ function App() {
   useEffect(() => {
     async function getTeamRepos(token: string, owner: string, team: string) {
       try {
-        const repos = await queryTeamRepos(config.token, config.owner, config.team);
+        const repos = await queryTeamRepos(token, owner, team);
         localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(repos));
         setConfig({ ...config, repos });
       } catch {
@@ -90,7 +90,7 @@ function App() {
       }
     }
     if (config.token && config.owner && config.team && config.repos.length === 0) {
-      getTeamRepos(config.token, config.owner, config.team);
+      getTeamRepos(config.token, config.owner, config.team).catch(console.error);
     }
   }, [config]);
 
@@ -105,7 +105,7 @@ function App() {
     }
     if (config.token && config.owner && config.repos.length > 0) {
       const filteredRepos = config.repos.filter((repo: string) => !config.ignoreRepos.includes(repo));
-      getPRsFromGithub(config.token, config.owner, filteredRepos);
+      getPRsFromGithub(config.token, config.owner, filteredRepos).catch(console.error);
     }
   }, [config]);
 
@@ -120,7 +120,7 @@ function App() {
     }
     if (config.token && config.owner && config.repos.length > 0) {
       const filteredRepos = config.repos.filter((repo: string) => !config.ignoreRepos.includes(repo));
-      getPRsFromGithub(config.token, config.owner, filteredRepos);
+      getPRsFromGithub(config.token, config.owner, filteredRepos).catch(console.error);
     }
   }, config.pollingInterval);
 
