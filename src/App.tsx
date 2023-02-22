@@ -164,7 +164,7 @@ function App() {
     return <div>{`Fetching ${config.team} team repositories.. This may take up to five minutes`}</div>;
   }
 
-  document.title = `(${displayPRs?.length}) PR Radiator`;
+  document.title = `(${displayPRs?.length ?? '()'}) PR Radiator`;
 
   return <div className="App">{displayPRs}</div>;
 }
