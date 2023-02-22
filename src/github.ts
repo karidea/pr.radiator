@@ -40,7 +40,7 @@ const BatchQueryPRs = (owner: string, repos: string[]) => {
 		reviews(first: 50) {nodes {
       state createdAt author { login }
     }}
-    timelineItems (first: 50, itemTypes: PULL_REQUEST_COMMIT) {  nodes {  __typename ... on PullRequestCommit { commit {
+    timelineItems (first: 37, itemTypes: PULL_REQUEST_COMMIT) {  nodes {  __typename ... on PullRequestCommit { commit {
 oid checkSuites (last: 1) { nodes { conclusion }} message status { state }
     }}}}
 }}}`;
