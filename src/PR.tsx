@@ -51,7 +51,7 @@ const getCommitState = (headRefOid: string, timelineItems: any) => {
     return node.commit.oid === headRefOid;
   });
   const [checkmark, circle, cross] = ['\u2714', '\u25cf', '\u2613'];
-  const conclusion = node?.commit?.checkSuites?.nodes[0]?.conclusion ?? node?.commit?.status?.state;
+  const conclusion = node?.commit?.statusCheckRollup?.state
 
   if (!conclusion) {
     return <span className="missing">-</span>;

@@ -41,7 +41,7 @@ const BatchQueryPRs = (owner: string, repos: string[]) => {
       state createdAt author { login }
     }}
     timelineItems (last: 1, itemTypes: PULL_REQUEST_COMMIT) {  nodes {  __typename ... on PullRequestCommit { commit {
-oid checkSuites (last: 1) { nodes { conclusion }} message status { state }
+oid statusCheckRollup { state }
     }}}}
 }}}`;
   }).join(' ');
