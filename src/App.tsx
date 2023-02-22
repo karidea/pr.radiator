@@ -130,12 +130,14 @@ function App() {
     }
     return req.some((req: any) => req.requestedReviewer.isViewer);
   }
+
   const isViewerInRequestedTeam = (req: any) => {
     if (req.length === 0) {
       return false;
     }
     return req.some((req: any) => req.requestedReviewer.members.nodes.some((req: any) => req.isViewer));
   }
+
   const isViewerParticipant = (participants: any) => participants.nodes.some((participant: any) => participant.isViewer)
   const filterCombined = (pr: any) => !showCodeOwnerPRs || (isViewerRequestedUser(pr.reviewRequests.nodes.filter((req: any) => req.requestedReviewer.__typename === "User")) || isViewerParticipant(pr.participants) || isViewerInRequestedTeam(pr.reviewRequests.nodes.filter((req: any) => req.requestedReviewer.__typename === "Team")));
   const filterDependabot = (pr: any) => !showDependabotPRs || pr.author.login !== 'dependabot';
