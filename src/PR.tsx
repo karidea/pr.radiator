@@ -47,21 +47,14 @@ const getAgeString = (createdAt: Date) => {
 }
 
 const getCommitState = (headRefOid: string, timelineItems: any) => {
-  const node = timelineItems.nodes.find((node: any) => {
-    return node.commit.oid === headRefOid;
-  });
-  const [checkmark, circle, cross] = ['\u2714', '\u25cf', '\u2613'];
-  const conclusion = node?.commit?.statusCheckRollup?.state
+  const node = timelineItems.nodes.find((node: any) => node.commit.oid === headRefOid);
+  const icons: any = { 'SUCCESS': '\u2714', 'PENDING': '\u25cf', 'FAILURE': '\u2613', 'EXPECTED': '\u25cf', 'ERROR': '\u2613' };
 
-  if (!conclusion) {
-    return <span className="missing">-</span>;
-  } else if (conclusion === 'SUCCESS') {
-    return <span className="success">{checkmark}</span>;
-  } else if (conclusion === 'STALE') {
-    return <span className="pending">{circle}</span>;
-  }
+  const conclusion: any = node?.commit?.statusCheckRollup?.state || 'ERROR';
+  const icon = icons[conclusion];
+  const className = conclusion.toLowerCase();
 
-  return <span className="failed">{cross}</span>;
+  return <span className={className}>{icon || '-'}</span>;
 }
 
 const TimelineEvent = (props: Event) => {

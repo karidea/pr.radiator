@@ -41,7 +41,7 @@ span.success, span.approved {
   color: #22863a;
 }
 
-span.failed, span.changes-requested {
+span.failure, span.changes-requested {
   color: red;
 }
 
