@@ -48,7 +48,7 @@ const getAgeString = (createdAt: Date) => {
 
 const getCommitState = (headRefOid: string, timelineItems: any) => {
   const node = timelineItems.nodes.find((node: any) => node.commit.oid === headRefOid);
-  const icons: any = { 'SUCCESS': '\u2714', 'PENDING': '\u25cf', 'FAILURE': '\u2613', 'EXPECTED': '\u25cf', 'ERROR': '\u2613' };
+  const icons: any = { 'SUCCESS': '\u2714', 'PENDING': '\u25cf', 'FAILURE': '\u2613', 'EXPECTED': '\u25cf', 'ERROR': '-' };
 
   const conclusion: any = node?.commit?.statusCheckRollup?.state || 'ERROR';
   const icon = icons[conclusion];
