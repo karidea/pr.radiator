@@ -1,4 +1,3 @@
-import React from 'react';
 import { addWeeks, addDays, addHours, isAfter, formatRFC3339, formatDistanceToNowStrict } from 'date-fns';
 import sortByCreatedAt from './utils';
 
