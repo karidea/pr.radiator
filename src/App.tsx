@@ -27,7 +27,7 @@ function App() {
   const [intervalInput, setIntervalInput] = useState(60);
   const [showCodeOwnerPRs, setShowCodeOwnerPRs] = useState(false);
   const [showDependabotPRs, toggleDependabotPRs] = useState(true);
-  const [showMasterPRs, toggleMasterPRs] = useState(true);
+  const [showMasterPRs, toggleMasterPRs] = useState(false);
 
   const [config, setConfig] = useState(() => ({
     token: localStorage.getItem('PR_RADIATOR_TOKEN') ?? '',
