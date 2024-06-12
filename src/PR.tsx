@@ -78,12 +78,12 @@ const PR = (props: any) => {
   const showBranch = props.showBranch;
   const createdAtDate = new Date(createdAt);
   const events = combineReviewsAndComments(reviews, comments);
-  const timeDistance = <span title={formatRFC3339(createdAtDate)}>{formatDistanceToNowStrict(createdAtDate)} ago</span>;
+  const elapsedTime = <span title={formatRFC3339(createdAtDate)}>{formatDistanceToNowStrict(createdAtDate)} ago</span>;
   const commitState = getCommitState(headRefOid, timelineItems);
 
   return (
     <div className={getAgeString(createdAtDate)}>
-      {timeDistance} {showBranch ? baseRefName : ''} {author.login} {commitState}&nbsp;
+      {elapsedTime} {showBranch ? baseRefName : ''} {author.login} {commitState}&nbsp;
       <a href={url} target="_blank" rel="noopener noreferrer">{`${repository.name}/pull/${props.pr.number}`}</a>&nbsp;
       {title}
       <br />
