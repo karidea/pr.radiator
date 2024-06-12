@@ -143,7 +143,7 @@ function App() {
   const filterDependabot = (pr: any) => !showDependabotPRs || pr.author.login !== 'dependabot';
   const filterMasterPRs = (pr: any) => showMasterPRs || pr.baseRefName !== 'master';
   const combinedPRs = PRs.length > 0 ? PRs.filter(filterCombined): null;
-  const displayPRs = combinedPRs && combinedPRs.length > 0 ? combinedPRs.filter(filterDependabot).filter(filterMasterPRs).map(pr => <PR key={pr.url} pr={pr} />) : null;
+  const displayPRs = combinedPRs && combinedPRs.length > 0 ? combinedPRs.filter(filterDependabot).filter(filterMasterPRs).map(pr => <PR key={pr.url} pr={pr} showBranch={showMasterPRs} />) : null;
   const handleOnChange = (e: React.ChangeEvent<HTMLInputElement>) => setIntervalInput(parseInt(e.target.value));
 
   if (!config.token || !config.owner || !config.team) {

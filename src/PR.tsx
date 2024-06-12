@@ -75,6 +75,7 @@ const TimelineEvent = (props: Event) => {
 
 const PR = (props: any) => {
   const { createdAt, reviews, comments, baseRefName, author, headRefOid, timelineItems, url, repository, title } = props.pr;
+  const showBranch = props.showBranch;
   const createdAtDate = new Date(createdAt);
   const events = combineReviewsAndComments(reviews, comments);
   const timeDistance = <span title={formatRFC3339(createdAtDate)}>{formatDistanceToNowStrict(createdAtDate)} ago</span>;
@@ -82,7 +83,7 @@ const PR = (props: any) => {
 
   return (
     <div className={getAgeString(createdAtDate)}>
-      {timeDistance} {baseRefName} {author.login} {commitState}&nbsp;
+      {timeDistance} {showBranch ? baseRefName : ''} {author.login} {commitState}&nbsp;
       <a href={url} target="_blank" rel="noopener noreferrer">{`${repository.name}/pull/${props.pr.number}`}</a>&nbsp;
       {title}
       <br />
