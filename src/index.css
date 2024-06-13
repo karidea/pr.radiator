@@ -101,3 +101,41 @@ a {
 .settings-form input[type=password]:focus {
   border: 3px solid #555;
 }
+
+.keyboard-shortcuts-overlay {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  background-color: #2c2f33; /* Dark grey background for dark mode */
+  border: 1px solid #3a3e44; /* Slightly darker border */
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2); /* Subtle shadow */
+  padding: 16px;
+  z-index: 1000;
+  max-width: 320px;
+  font-family: Arial, sans-serif;
+  font-size: 14px;
+  color: #cccccc; /* Light text color */
+}
+
+.keyboard-shortcuts-overlay h2 {
+  font-size: 16px;
+  margin-bottom: 12px;
+  color: #dddddd; /* Slightly brighter heading color */
+}
+
+.keyboard-shortcuts-overlay ul {
+  list-style-type: none;
+  padding: 0;
+  margin: 0;
+}
+
+.keyboard-shortcuts-overlay li {
+  margin-bottom: 8px;
+}
+
+.keyboard-shortcuts-overlay li::before {
+  content: "•";
+  margin-right: 8px;
+  color: #999999; /* Lighter bullet color */
+}

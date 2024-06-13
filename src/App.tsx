@@ -1,6 +1,7 @@
 import React, { useEffect, useState, FormEvent, useRef } from 'react';
 import PR from './PR';
 import { filterTeamRepos, queryPRs, queryTeamRepos } from './github';
+import KeyboardShortcutsOverlay from './KeyboardShortcutsOverlay';
 
 function useInterval(callback: any, delay: any) {
   const savedCallback = useRef();
@@ -28,6 +29,7 @@ function App() {
   const [showCodeOwnerPRs, setShowCodeOwnerPRs] = useState(false);
   const [showDependabotPRs, toggleDependabotPRs] = useState(true);
   const [showMasterPRs, toggleMasterPRs] = useState(false);
+  const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
 
   const [config, setConfig] = useState(() => ({
     token: localStorage.getItem('PR_RADIATOR_TOKEN') ?? '',
@@ -58,26 +60,31 @@ function App() {
   useEffect(() => {
     function onKeydown(event: any) {
       // 'c' toggles code owned or participated in PR visibility
-      if (event.keyCode === 67) {
+      if (event.key === 'c') {
         setShowCodeOwnerPRs(!showCodeOwnerPRs);
       }
       // 'd' toggles dependabot PR visibility
-      if (event.keyCode === 68) {
+      if (event.key === 'd') {
         toggleDependabotPRs(!showDependabotPRs);
       }
       // 'm' toggles showing PRs to master
-      if (event.keyCode === 77) {
+      if (event.key === 'm') {
         toggleMasterPRs(!showMasterPRs);
       }
       // '\' backslash clears repo names to trigger refetching
-      if (event.keyCode === 220) {
+      if (event.key === '\\' || event.key === 'Backslash') { // handle both '\' and 'Backslash' key names
         localStorage.removeItem('PR_RADIATOR_REPOS');
         setConfig({ ...config, repos: [] });
       }
+      // '?' shows the keyboard shortcuts overlay
+      if (event.key === '?' && event.shiftKey) {
+        setShowKeyboardShortcuts(!showKeyboardShortcuts);
+      }
     }
+
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
-  }, [showCodeOwnerPRs, showDependabotPRs, showMasterPRs, config]);
+  }, [showCodeOwnerPRs, showDependabotPRs, showMasterPRs, showKeyboardShortcuts, config]);
 
   useEffect(() => {
     async function getTeamRepos(token: string, owner: string, team: string) {
@@ -169,7 +176,12 @@ function App() {
 
   document.title = `(${displayPRs?.length ?? ''}) PR Radiator`;
 
-  return <div className="App">{displayPRs}</div>;
+  return (
+    <div className="App">
+      {displayPRs}
+      {showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => setShowKeyboardShortcuts(false)} />}
+    </div>
+  );
 }
 
 export default App;
