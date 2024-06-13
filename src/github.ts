@@ -16,8 +16,7 @@ const RepositoriesQuery = (owner: string, team: string, next: string | null) => 
         edges {
           permission
           node {
-            name
-            viewerPermission
+            name isArchived
           }
         }
       }
@@ -70,6 +69,43 @@ export const maxConcurrentBatchQueryPRs = (token: string, owner: string, repos: 
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+export const filterTeamRepos = async (token: string, owner: string, team: string, repos: string[]) => {
+  const filteredRepos: string[] = [];
+  const concurrencyLimit = 20;
+  const semaphore = Array(concurrencyLimit).fill(Promise.resolve());
+
+  const makeRequest = async (repoName: string) => {
+    try {
+      const response = await axios.get(`https://api.github.com/repos/${owner}/${repoName}/teams`, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      const teams = response.data;
+
+      for (const t of teams) {
+        if (t.slug === team && t.permission === 'admin') {
+          filteredRepos.push(repoName);
+          break;
+        }
+      }
+    } catch (error) {
+      console.error(`Error fetching teams for repo ${repoName}:`, error);
+    }
+  };
+
+  const runRequests = repos.map((repoName, index) => {
+    const request = () => makeRequest(repoName);
+    const wrappedRequest = semaphore[index % concurrencyLimit].then(request);
+    semaphore[index % concurrencyLimit] = wrappedRequest;
+    return wrappedRequest;
+  });
+
+  await Promise.all(runRequests);
+
+  return filteredRepos;
+}
+
 export const queryTeamRepos = async (token: string, owner: string, team: string) => {
   let hasNextPage = true;
   let next: string | null = null;
@@ -86,7 +122,7 @@ export const queryTeamRepos = async (token: string, owner: string, team: string)
     const repositories: any = result.data.data.organization.team.repositories;
 
     repositories.edges.forEach((repo: any) => {
-      if (repo.permission === 'ADMIN') {
+      if (repo.permission === 'ADMIN' && repo.node.isArchived === false) {
         repoNames.push(repo.node.name);
       }
     });

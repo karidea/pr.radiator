@@ -1,6 +1,6 @@
 import React, { useEffect, useState, FormEvent, useRef } from 'react';
 import PR from './PR';
-import { queryPRs, queryTeamRepos } from './github';
+import { filterTeamRepos, queryPRs, queryTeamRepos } from './github';
 
 function useInterval(callback: any, delay: any) {
   const savedCallback = useRef();
@@ -65,7 +65,7 @@ function App() {
       if (event.keyCode === 68) {
         toggleDependabotPRs(!showDependabotPRs);
       }
-      // 'm' toggles dependabot PR visibility
+      // 'm' toggles showing PRs to master
       if (event.keyCode === 77) {
         toggleMasterPRs(!showMasterPRs);
       }
@@ -83,7 +83,8 @@ function App() {
     async function getTeamRepos(token: string, owner: string, team: string) {
       try {
         const repos = await queryTeamRepos(token, owner, team);
-        localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(repos));
+        const filteredRepos = await filterTeamRepos(token, owner, team, repos);
+        localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
         setConfig({ ...config, repos });
       } catch {
         console.log('Failed to fetch team repos');
@@ -163,7 +164,7 @@ function App() {
   }
 
   if (config.repos.length === 0) {
-    return <div>{`Fetching ${config.team} team repositories.. This may take up to five minutes`}</div>;
+    return <div>{`Fetching ${config.team} team repositories..`}</div>;
   }
 
   document.title = `(${displayPRs?.length ?? ''}) PR Radiator`;
