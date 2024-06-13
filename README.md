@@ -10,7 +10,7 @@ Fetch PRs by organization team name and display pertinant details
 * No backend needed. Everything runs in the browser. Configuration is stored in local storage
 
 ## Configuration
-* `PR_RADIATOR_TOKEN`: Github Personal Access Token (https://github.com/settings/token)
+* `PR_RADIATOR_TOKEN`: Github Personal Access Token (https://github.com/settings/tokens)
   * `read:org, repo` scopes needed and SSO for organization needs to be enabled
 * `PR_RADIATOR_REPOS`: Array of strings of the repository names to query
 * `PR_RADIATOR_TEAM`: Github team (used to fetch the repository names)

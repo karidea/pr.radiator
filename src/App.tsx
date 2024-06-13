@@ -27,7 +27,7 @@ function App() {
   const [PRs, setPRs] = useState<any[]>([]);
   const [intervalInput, setIntervalInput] = useState(60);
   const [showCodeOwnerPRs, setShowCodeOwnerPRs] = useState(false);
-  const [showDependabotPRs, toggleDependabotPRs] = useState(true);
+  const [showDependabotPRs, toggleDependabotPRs] = useState(false);
   const [showMasterPRs, toggleMasterPRs] = useState(false);
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
 
@@ -148,7 +148,7 @@ function App() {
 
   const isViewerParticipant = (participants: any) => participants.nodes.some((participant: any) => participant.isViewer)
   const filterCombined = (pr: any) => !showCodeOwnerPRs || (isViewerRequestedUser(pr.reviewRequests.nodes.filter((req: any) => req.requestedReviewer.__typename === "User")) || isViewerParticipant(pr.participants) || isViewerInRequestedTeam(pr.reviewRequests.nodes.filter((req: any) => req.requestedReviewer.__typename === "Team")));
-  const filterDependabot = (pr: any) => !showDependabotPRs || pr.author.login !== 'dependabot';
+  const filterDependabot = (pr: any) => showDependabotPRs || pr.author.login !== 'dependabot';
   const filterMasterPRs = (pr: any) => showMasterPRs || pr.baseRefName !== 'master';
   const combinedPRs = PRs.length > 0 ? PRs.filter(filterCombined): null;
   const displayPRs = combinedPRs && combinedPRs.length > 0 ? combinedPRs.filter(filterDependabot).filter(filterMasterPRs).map(pr => <PR key={pr.url} pr={pr} showBranch={showMasterPRs} />) : null;
@@ -159,9 +159,19 @@ function App() {
       <div className="settings-form">
         <h1>Configure PR Radiator</h1>
         <form autoComplete="off" onSubmit={onSubmit}>
-          <input type="text" id="owner" placeholder="Github Organization" autoFocus={true} autoComplete="off" />
-          <input type="text" id="team" placeholder="Github Team" autoComplete="off" />
-          <input type="password" id="token" placeholder="Github Personal Access Token" autoComplete="new-password" />
+          <input type="text" id="owner" placeholder="Github Organization" autoFocus={true} autoComplete="off" defaultValue={config.owner} />
+          <input type="text" id="team" placeholder="Github Team" autoComplete="off" defaultValue={config.team} />
+          <input type="password" id="token" placeholder="Github Personal Access Token" autoComplete="new-password" defaultValue={config.token} />
+          <a
+            href="https://github.com/settings/tokens"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="info-link"
+            title="Generate a personal access token with read:org and repo scopes"
+          >
+            https://github.com/settings/tokens
+          </a>
+        <span> - Generate a personal access token with read:org and repo scopes</span>
           <div>
         Github Polling Interval <input type="number" id="polling-interval" onChange={handleOnChange} value={intervalInput} min="5" /> (seconds)</div>
           <input type="submit" value="Begin" id="submit" />
