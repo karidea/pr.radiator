@@ -58,7 +58,7 @@ function App() {
   }
 
   useEffect(() => {
-    function onKeydown(event: any) {
+    async function onKeydown(event: any) {
       // 'c' toggles code owned or participated in PR visibility
       if (event.key === 'c') {
         setShowCodeOwnerPRs(!showCodeOwnerPRs);
@@ -70,6 +70,16 @@ function App() {
       // 'm' toggles showing PRs to master
       if (event.key === 'm') {
         toggleMasterPRs(!showMasterPRs);
+      }
+      // 'r' manually trigger refresh of PRs
+      if (event.key === 'r') {
+        try {
+          const filteredRepos = config.repos.filter((repo: string) => !config.ignoreRepos.includes(repo));
+          const PRs = await queryPRs(config.token, config.owner, filteredRepos);
+          setPRs(PRs);
+        } catch {
+          console.log('Failed to fetch PRs');
+        }
       }
       // '\' backslash clears repo names to trigger refetching
       if (event.key === '\\' || event.key === 'Backslash') { // handle both '\' and 'Backslash' key names
