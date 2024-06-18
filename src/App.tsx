@@ -71,7 +71,7 @@ function App() {
       if (event.key === 'm') {
         toggleMasterPRs(!showMasterPRs);
       }
-      // 'r' manually trigger refresh of PRs
+      // 'r' triggers refresh of PRs
       if (event.key === 'r') {
         try {
           const filteredRepos = config.repos.filter((repo: string) => !config.ignoreRepos.includes(repo));
@@ -98,7 +98,7 @@ function App() {
 
   useEffect(() => {
     async function getTeamRepos(token: string, owner: string, team: string) {
-      try {
+      try{
         const repos = await queryTeamRepos(token, owner, team);
         const filteredRepos = await filterTeamRepos(token, owner, team, repos);
         localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
@@ -159,7 +159,7 @@ function App() {
   const isViewerParticipant = (participants: any) => participants.nodes.some((participant: any) => participant.isViewer)
   const filterCombined = (pr: any) => !showCodeOwnerPRs || (isViewerRequestedUser(pr.reviewRequests.nodes.filter((req: any) => req.requestedReviewer.__typename === "User")) || isViewerParticipant(pr.participants) || isViewerInRequestedTeam(pr.reviewRequests.nodes.filter((req: any) => req.requestedReviewer.__typename === "Team")));
   const filterDependabot = (pr: any) => showDependabotPRs || pr.author.login !== 'dependabot';
-  const filterMasterPRs = (pr: any) => showMasterPRs || pr.baseRefName !== 'master';
+  const filterMasterPRs = (pr: any) => showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main');
   const combinedPRs = PRs.length > 0 ? PRs.filter(filterCombined): null;
   const displayPRs = combinedPRs && combinedPRs.length > 0 ? combinedPRs.filter(filterDependabot).filter(filterMasterPRs).map(pr => <PR key={pr.url} pr={pr} showBranch={showMasterPRs} />) : null;
   const handleOnChange = (e: React.ChangeEvent<HTMLInputElement>) => setIntervalInput(parseInt(e.target.value));
