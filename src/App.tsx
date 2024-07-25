@@ -220,6 +220,15 @@ function App() {
 
   document.title = `(${displayPRs?.length ?? ''}) PR Radiator`;
 
+  if (displayPRs?.length === 0) {
+    return (
+      <div className="App">
+        No PRs found
+        {showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => toggleShowKeyboardShortcuts(false)} />}
+      </div>
+    );
+  }
+
   return (
     <div className="App">
       {displayPRs}
