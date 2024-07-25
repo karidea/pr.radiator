@@ -1,5 +1,6 @@
 import React, { useEffect, useState, FormEvent, useRef } from 'react';
 import PR from './PR';
+import RecentPR from './RecentPR';
 import { filterTeamRepos, queryPRs, queryTeamRepos } from './github';
 import KeyboardShortcutsOverlay from './KeyboardShortcutsOverlay';
 
@@ -25,11 +26,13 @@ function useInterval(callback: any, delay: any) {
 
 function App() {
   const [PRs, setPRs] = useState<any[]>([]);
+  const [recentPRs, setRecentPRs] = useState<any[]>([]);
   const [intervalInput, setIntervalInput] = useState(60);
   const [showCodeOwnerPRs, setShowCodeOwnerPRs] = useState(false);
   const [showDependabotPRs, toggleDependabotPRs] = useState(false);
   const [showMasterPRs, toggleMasterPRs] = useState(false);
-  const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
+  const [showKeyboardShortcuts, toggleShowKeyboardShortcuts] = useState(false);
+  const [showRecentPRs, toggleShowRecentPRs] = useState(false);
 
   const [config, setConfig] = useState(() => ({
     token: localStorage.getItem('PR_RADIATOR_TOKEN') ?? '',
@@ -71,12 +74,18 @@ function App() {
       if (event.key === 'm') {
         toggleMasterPRs(!showMasterPRs);
       }
+      // 'l' toggles showing recent PRs to master
+      if (event.key === 'l') {
+        toggleShowRecentPRs(!showRecentPRs);
+      }
       // 'r' triggers refresh of PRs
       if (event.key === 'r') {
         try {
           const filteredRepos = config.repos.filter((repo: string) => !config.ignoreRepos.includes(repo));
-          const PRs = await queryPRs(config.token, config.owner, filteredRepos);
-          setPRs(PRs);
+          const sinceTwoWeeksAgo = new Date(Date.now() - (14 * 24 * 60 * 60 * 1000)).toISOString();
+          const PRs = await queryPRs(config.token, config.owner, filteredRepos, sinceTwoWeeksAgo);
+          setPRs(PRs.resultPRs);
+          setRecentPRs(PRs.refCommits);
         } catch {
           console.log('Failed to fetch PRs');
         }
@@ -88,13 +97,13 @@ function App() {
       }
       // '?' shows the keyboard shortcuts overlay
       if (event.key === '?' && event.shiftKey) {
-        setShowKeyboardShortcuts(!showKeyboardShortcuts);
+        toggleShowKeyboardShortcuts(!showKeyboardShortcuts);
       }
     }
 
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
-  }, [showCodeOwnerPRs, showDependabotPRs, showMasterPRs, showKeyboardShortcuts, config]);
+  }, [showCodeOwnerPRs, showDependabotPRs, showMasterPRs, showRecentPRs, showKeyboardShortcuts, config]);
 
   useEffect(() => {
     async function getTeamRepos(token: string, owner: string, team: string) {
@@ -115,8 +124,10 @@ function App() {
   useEffect(() => {
     async function getPRsFromGithub(token: string, owner: string, repos: string[]) {
       try {
-        const PRs = await queryPRs(token, owner, repos);
-        setPRs(PRs);
+        const sinceTwoWeeksAgo = new Date(Date.now() - (14 * 24 * 60 * 60 * 1000)).toISOString();
+        const PRs = await queryPRs(token, owner, repos, sinceTwoWeeksAgo);
+        setPRs(PRs.resultPRs);
+        setRecentPRs(PRs.refCommits);
       } catch {
         console.log('Failed to fetch PRs');
       }
@@ -130,8 +141,10 @@ function App() {
   useInterval(() => {
     async function getPRsFromGithub(token: string, owner: string, repos: string[]) {
       try {
-        const PRs = await queryPRs(token, owner, repos);
-        setPRs(PRs);
+        const sinceTwoWeeksAgo = new Date(Date.now() - (14 * 24 * 60 * 60 * 1000)).toISOString();
+        const PRs = await queryPRs(token, owner, repos, sinceTwoWeeksAgo);
+        setPRs(PRs.resultPRs);
+        setRecentPRs(PRs.refCommits);
       } catch {
         console.log('Failed to fetch PRs');
       }
@@ -163,6 +176,7 @@ function App() {
   const combinedPRs = PRs.length > 0 ? PRs.filter(filterCombined): null;
   const displayPRs = combinedPRs && combinedPRs.length > 0 ? combinedPRs.filter(filterDependabot).filter(filterMasterPRs).map(pr => <PR key={pr.url} pr={pr} showBranch={showMasterPRs} />) : null;
   const handleOnChange = (e: React.ChangeEvent<HTMLInputElement>) => setIntervalInput(parseInt(e.target.value));
+  const displayRecentPRs = showRecentPRs ? recentPRs.map(pr => <RecentPR key={pr.url} pr={pr} />) : null;
 
   if (!config.token || !config.owner || !config.team) {
     return (
@@ -194,12 +208,22 @@ function App() {
     return <div>{`Fetching ${config.team} team repositories..`}</div>;
   }
 
+  if (showRecentPRs) {
+    document.title = `PR Radiator`;
+    return (
+      <div className="App">
+        {displayRecentPRs}
+        {showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => toggleShowKeyboardShortcuts(false)} />}
+      </div>
+    );
+  }
+
   document.title = `(${displayPRs?.length ?? ''}) PR Radiator`;
 
   return (
     <div className="App">
       {displayPRs}
-      {showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => setShowKeyboardShortcuts(false)} />}
+      {showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => toggleShowKeyboardShortcuts(false)} />}
     </div>
   );
 }

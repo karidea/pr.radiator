@@ -1,5 +1,5 @@
 import axios from 'axios';
-import sortByCreatedAt from './utils';
+import { sortByCreatedAt, byCreatedAtDesc } from './utils';
 
 const RepositoriesQuery = (owner: string, team: string, next: string | null) => {
   const after: string = next ? `"${next}"`: 'null';
@@ -24,10 +24,27 @@ const RepositoriesQuery = (owner: string, team: string, next: string | null) => 
   }
 }`};
 
-const BatchQueryPRs = (owner: string, repos: string[]) => {
+const BatchQueryPRs = (owner: string, repos: string[], sinceDateTime: string) => {
   const batchedRepos = repos.map((repo, index) => {
     const repoFieldAlias = 'alias' +  index;
-    return `${repoFieldAlias}:repository (owner: "${owner}", name: "${repo}") { name isArchived pullRequests(last: 15, states: OPEN) { nodes {
+    return `${repoFieldAlias}:repository (owner: "${owner}", name: "${repo}") { name
+    ref(qualifiedName:"master") {
+          target {... on Commit {history(first: 50, since: "${sinceDateTime}") {
+            nodes {
+              committedDate
+              messageHeadline
+              parents {
+                totalCount
+              }
+              associatedPullRequests(first:10) {
+                nodes { createdAt number title url author { login } repository { name } }
+              }
+            }
+          }
+        }
+      }
+    }
+isArchived pullRequests(last: 15, states: OPEN) { nodes {
 		title url createdAt baseRefName headRefOid isDraft number
 		participants (first: 10) { nodes { isViewer login }}
 		reviewRequests (first:20) { nodes {requestedReviewer { __typename ... on User { login isViewer } ... on Team { slug members { nodes { login isViewer } } }}}}
@@ -54,7 +71,7 @@ const chunks = (array: string[], chunk_size: number) =>
     .map((_: any, index: number) => index * chunk_size)
     .map((begin: any) => array.slice(begin, begin + chunk_size));
 
-export const maxConcurrentBatchQueryPRs = (token: string, owner: string, repos: string[]) => {
+export const maxConcurrentBatchQueryPRs = (token: string, owner: string, repos: string[], sinceDateTime: string) => {
   const result = chunks(repos, Math.ceil(repos.length / 6));
 
   return result.map((repos: string[]) => {
@@ -62,7 +79,7 @@ export const maxConcurrentBatchQueryPRs = (token: string, owner: string, repos: 
       url: 'https://api.github.com/graphql',
       method: 'post',
       headers: { Authorization: `Bearer ${token}` },
-      data: { query: BatchQueryPRs(owner, repos) }
+      data: { query: BatchQueryPRs(owner, repos, sinceDateTime) }
     });
   });
 };
@@ -138,9 +155,10 @@ export const queryTeamRepos = async (token: string, owner: string, team: string)
   return repoNames;
 };
 
-export const queryPRs = async (token: string, owner: string, repos: string[]) => {
-  const results = await Promise.all(maxConcurrentBatchQueryPRs(token, owner, repos));
+export const queryPRs = async (token: string, owner: string, repos: string[], sinceDateTime: string) => {
+  const results = await Promise.all(maxConcurrentBatchQueryPRs(token, owner, repos, sinceDateTime));
   const resultPRs: any[] = [];
+  const refCommits: any[] = [];
   results.forEach((result: any) => {
     const keys = Object.keys(result.data.data);
     keys.forEach((key) => {
@@ -148,8 +166,17 @@ export const queryPRs = async (token: string, owner: string, repos: string[]) =>
       if (pullRequests.length > 0 && !result.data.data[key].isArchived) {
         resultPRs.push(...pullRequests);
       }
+      const keyRefCommits = result.data.data[key]?.ref?.target?.history?.nodes ?? [];
+      if (keyRefCommits.length > 0) {
+        refCommits.push(result.data.data[key].ref);
+      }
     });
   });
 
-  return resultPRs.sort(sortByCreatedAt).filter(pr => !pr.isDraft);
+
+  const recentPullRequests: any[] = [];
+  refCommits.forEach(ref => ref.target.history.nodes.forEach((commit: any) => (commit.parents.totalCount > 1) ? commit.associatedPullRequests.nodes.forEach((pr: any) => recentPullRequests.push(pr)) : null));
+  const filteredRecentPRs = [...new Set(recentPullRequests.map(pr => pr.url))].map(url => recentPullRequests.find(pr => pr.url === url));
+
+  return { refCommits: filteredRecentPRs.sort(byCreatedAtDesc), resultPRs: resultPRs.sort(sortByCreatedAt).filter(pr => !pr.isDraft) };
 }

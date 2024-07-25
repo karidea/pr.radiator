@@ -1,5 +1,5 @@
 import { addWeeks, addDays, addHours, isAfter, formatRFC3339, formatDistanceToNowStrict } from 'date-fns';
-import sortByCreatedAt from './utils';
+import { sortByCreatedAt } from './utils';
 
 type Event = {
 	createdAt: string;
