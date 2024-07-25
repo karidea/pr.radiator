@@ -2,8 +2,8 @@ import { formatRFC3339, formatDistanceToNowStrict } from 'date-fns';
 
 const RecentPR = (props: any) => {
   const { pr } = props;
-  const createdAtDate= new Date(pr.createdAt);
-  const elapsedTime = <span title={formatRFC3339(createdAtDate)}>{formatDistanceToNowStrict(createdAtDate)} ago</span>;
+  const committedDate = new Date(pr.committedDate);
+  const elapsedTime = <span title={formatRFC3339(committedDate)}>{formatDistanceToNowStrict(committedDate)} ago</span>;
 
   return (
     <div>

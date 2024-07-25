@@ -8,11 +8,11 @@ export const sortByCreatedAt = (a: any, b: any) => {
   return 0;
 }
 
-export const byCreatedAtDesc = (a: any, b: any) => {
-  if (a.createdAt > b.createdAt) {
+export const byCommittedDateDesc = (a: any, b: any) => {
+  if (a.committedDate > b.committedDate) {
     return -1;
   }
-  if (a.createdAt < b.createdAt) {
+  if (a.committedDate < b.committedDate) {
     return 1;
   }
   return 0;

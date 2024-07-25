@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { sortByCreatedAt, byCreatedAtDesc } from './utils';
+import { sortByCreatedAt, byCommittedDateDesc } from './utils';
 
 const RepositoriesQuery = (owner: string, team: string, next: string | null) => {
   const after: string = next ? `"${next}"`: 'null';
@@ -175,8 +175,11 @@ export const queryPRs = async (token: string, owner: string, repos: string[], si
 
 
   const recentPullRequests: any[] = [];
-  refCommits.forEach(ref => ref.target.history.nodes.forEach((commit: any) => (commit.parents.totalCount > 1) ? commit.associatedPullRequests.nodes.forEach((pr: any) => recentPullRequests.push(pr)) : null));
+  refCommits.forEach(ref => ref.target.history.nodes.forEach((commit: any) => (commit.parents.totalCount > 1) ? commit.associatedPullRequests.nodes.forEach((pr: any) => {
+    pr['committedDate'] = commit.committedDate;
+    recentPullRequests.push(pr);
+  }) : null));
   const filteredRecentPRs = [...new Set(recentPullRequests.map(pr => pr.url))].map(url => recentPullRequests.find(pr => pr.url === url));
 
-  return { refCommits: filteredRecentPRs.sort(byCreatedAtDesc), resultPRs: resultPRs.sort(sortByCreatedAt).filter(pr => !pr.isDraft) };
+  return { refCommits: filteredRecentPRs.sort(byCommittedDateDesc), resultPRs: resultPRs.sort(sortByCreatedAt).filter(pr => !pr.isDraft) };
 }
