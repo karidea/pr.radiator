@@ -17,7 +17,7 @@ function useInterval(callback: any, delay: any) {
       savedCallback.current();
     }
     if (delay) {
-      let id = setInterval(tick, delay);
+      const id = setInterval(tick, delay);
       return () => clearInterval(id);
     }
   }, [delay]);
@@ -61,7 +61,7 @@ function App() {
   }
 
   useEffect(() => {
-    async function onKeydown(event: any) {
+    function onKeydown(event: any) {
       // 'c' toggles code owned or participated in PR visibility
       if (event.key === 'c') {
         setShowCodeOwnerPRs(!showCodeOwnerPRs);
@@ -80,15 +80,19 @@ function App() {
       }
       // 'r' triggers refresh of PRs
       if (event.key === 'r') {
-        try {
-          const filteredRepos = config.repos.filter((repo: string) => !config.ignoreRepos.includes(repo));
-          const sinceTwoWeeksAgo = new Date(Date.now() - (14 * 24 * 60 * 60 * 1000)).toISOString();
-          const PRs = await queryPRs(config.token, config.owner, filteredRepos, sinceTwoWeeksAgo);
-          setPRs(PRs.resultPRs);
-          setRecentPRs(PRs.refCommits);
-        } catch {
-          console.log('Failed to fetch PRs');
-        }
+        (async () => {
+          try {
+            const filteredRepos = config.repos.filter((repo: string) => !config.ignoreRepos.includes(repo));
+            const sinceTwoWeeksAgo = new Date(Date.now() - (14 * 24 * 60 * 60 * 1000)).toISOString();
+            const PRs = await queryPRs(config.token, config.owner, filteredRepos, sinceTwoWeeksAgo);
+            setPRs(PRs.resultPRs);
+            setRecentPRs(PRs.refCommits);
+          } catch {
+            console.log('Failed to fetch PRs');
+          }
+        })().catch(error => {
+          console.error('Unexpected error in PR refresh', error);
+        });
       }
       // '\' backslash clears repo names to trigger refetching
       if (event.key === '\\' || event.key === 'Backslash') { // handle both '\' and 'Backslash' key names
