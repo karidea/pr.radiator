@@ -187,8 +187,8 @@ function App() {
       <div className="settings-form">
         <h1>Configure PR Radiator</h1>
         <form autoComplete="off" onSubmit={onSubmit}>
-          <input type="text" id="owner" placeholder="Github Organization" autoFocus={true} autoComplete="off" defaultValue={config.owner} />
-          <input type="text" id="team" placeholder="Github Team" autoComplete="off" defaultValue={config.team} />
+          <input type="text" id="owner" placeholder="github-organization" autoFocus={true} autoComplete="off" defaultValue={config.owner} />
+          <input type="text" id="team" placeholder="github-team-name" autoComplete="off" defaultValue={config.team} />
           <input type="password" id="token" placeholder="Github Personal Access Token" autoComplete="new-password" defaultValue={config.token} />
           <a
             href="https://github.com/settings/tokens"
