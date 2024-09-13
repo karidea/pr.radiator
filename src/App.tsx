@@ -98,6 +98,8 @@ function App() {
       if (event.key === '\\' || event.key === 'Backslash') { // handle both '\' and 'Backslash' key names
         localStorage.removeItem('PR_RADIATOR_REPOS');
         setConfig({ ...config, repos: [] });
+        setPRs([]);
+        setRecentPRs([]);
       }
       // '?' shows the keyboard shortcuts overlay
       if (event.key === '?' && event.shiftKey) {
