@@ -200,7 +200,7 @@ function App() {
   if (showRepoLinks) {
     return (
       <div className="App">
-        <h1>Repositories</h1>
+        <h1>{config.team} repositories ({config.repos.length})</h1>
         <ul>
           {config.repos.map((repo: string) => <li key={repo}><a href={`https://github.com/${config.owner}/${repo}`} target="_blank" rel="noopener noreferrer">{repo}</a></li>)}
         </ul>
