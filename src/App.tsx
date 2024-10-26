@@ -117,7 +117,7 @@ function App() {
         const repos = await queryTeamRepos(token, owner, team);
         const filteredRepos = await filterTeamRepos(token, owner, team, repos);
         localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
-        setConfig({ ...config, repos });
+        setConfig({ ...config, repos: filteredRepos });
       } catch {
         console.log('Failed to fetch team repos');
       }
