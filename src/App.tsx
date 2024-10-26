@@ -28,11 +28,11 @@ function App() {
   const [PRs, setPRs] = useState<any[]>([]);
   const [recentPRs, setRecentPRs] = useState<any[]>([]);
   const [intervalInput, setIntervalInput] = useState(60);
-  const [showCodeOwnerPRs, setShowCodeOwnerPRs] = useState(false);
   const [showDependabotPRs, toggleDependabotPRs] = useState(false);
   const [showMasterPRs, toggleMasterPRs] = useState(false);
   const [showKeyboardShortcuts, toggleShowKeyboardShortcuts] = useState(false);
   const [showRecentPRs, toggleShowRecentPRs] = useState(false);
+  const [showRepoLinks, setShowRepoLinks] = useState(false);
 
   const [config, setConfig] = useState(() => ({
     token: localStorage.getItem('PR_RADIATOR_TOKEN') ?? '',
@@ -62,10 +62,6 @@ function App() {
 
   useEffect(() => {
     function onKeydown(event: any) {
-      // 'c' toggles code owned or participated in PR visibility
-      if (event.key === 'c') {
-        setShowCodeOwnerPRs(!showCodeOwnerPRs);
-      }
       // 'd' toggles dependabot PR visibility
       if (event.key === 'd') {
         toggleDependabotPRs(!showDependabotPRs);
@@ -74,9 +70,13 @@ function App() {
       if (event.key === 'm') {
         toggleMasterPRs(!showMasterPRs);
       }
-      // 'l' toggles showing recent PRs to master
-      if (event.key === 'l') {
+      // 'a' toggles showing recent PRs to master
+      if (event.key === 'a') {
         toggleShowRecentPRs(!showRecentPRs);
+      }
+      // 'l' toggles showing repo links
+      if (event.key === 'l') {
+        setShowRepoLinks(!showRepoLinks);
       }
       // 'r' triggers refresh of PRs
       if (event.key === 'r') {
@@ -109,7 +109,7 @@ function App() {
 
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
-  }, [showCodeOwnerPRs, showDependabotPRs, showMasterPRs, showRecentPRs, showKeyboardShortcuts, config]);
+  }, [showDependabotPRs, showMasterPRs, showRecentPRs, showRepoLinks, showKeyboardShortcuts, config]);
 
   useEffect(() => {
     async function getTeamRepos(token: string, owner: string, team: string) {
@@ -161,26 +161,9 @@ function App() {
     }
   }, config.pollingInterval);
 
-  const isViewerRequestedUser = (req: any) => {
-    if (req.length === 0) {
-      return false;
-    }
-    return req.some((req: any) => req.requestedReviewer.isViewer);
-  }
-
-  const isViewerInRequestedTeam = (req: any) => {
-    if (req.length === 0) {
-      return false;
-    }
-    return req.some((req: any) => req.requestedReviewer.members.nodes.some((req: any) => req.isViewer));
-  }
-
-  const isViewerParticipant = (participants: any) => participants.nodes.some((participant: any) => participant.isViewer)
-  const filterCombined = (pr: any) => !showCodeOwnerPRs || (isViewerRequestedUser(pr.reviewRequests.nodes.filter((req: any) => req.requestedReviewer.__typename === "User")) || isViewerParticipant(pr.participants) || isViewerInRequestedTeam(pr.reviewRequests.nodes.filter((req: any) => req.requestedReviewer.__typename === "Team")));
   const filterDependabot = (pr: any) => showDependabotPRs || pr.author.login !== 'dependabot';
   const filterMasterPRs = (pr: any) => showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main');
-  const combinedPRs = PRs.length > 0 ? PRs.filter(filterCombined): null;
-  const displayPRs = combinedPRs && combinedPRs.length > 0 ? combinedPRs.filter(filterDependabot).filter(filterMasterPRs).map(pr => <PR key={pr.url} pr={pr} showBranch={showMasterPRs} />) : null;
+  const displayPRs = PRs && PRs.length > 0 ? PRs.filter(filterDependabot).filter(filterMasterPRs).map(pr => <PR key={pr.url} pr={pr} showBranch={showMasterPRs} />) : null;
   const handleOnChange = (e: React.ChangeEvent<HTMLInputElement>) => setIntervalInput(parseInt(e.target.value));
   const displayRecentPRs = showRecentPRs ? recentPRs.map(pr => <RecentPR key={pr.url} pr={pr} />) : null;
 
@@ -212,6 +195,18 @@ function App() {
 
   if (config.repos.length === 0) {
     return <div>{`Fetching ${config.team} team repositories..`}</div>;
+  }
+
+  if (showRepoLinks) {
+    return (
+      <div className="App">
+        <h1>Repositories</h1>
+        <ul>
+          {config.repos.map((repo: string) => <li key={repo}><a href={`https://github.com/${config.owner}/${repo}`} target="_blank" rel="noopener noreferrer">{repo}</a></li>)}
+        </ul>
+        {showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => toggleShowKeyboardShortcuts(false)} />}
+      </div>
+    );
   }
 
   if (showRecentPRs) {
