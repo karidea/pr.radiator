@@ -9,6 +9,7 @@ export default defineConfig({
     open: true,
   },
   build: {
+    target: 'esnext',
     outDir: 'docs'
   },
   plugins: [react(), checker({ typescript: true })],
