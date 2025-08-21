@@ -29,14 +29,14 @@ const BatchQueryPRs = (owner: string, repos: string[], sinceDateTime: string) =>
     const repoFieldAlias = 'alias' +  index;
     return `${repoFieldAlias}:repository (owner: "${owner}", name: "${repo}") { name
     ref(qualifiedName:"master") {
-          target {... on Commit {history(first: 50, since: "${sinceDateTime}") {
+          target {... on Commit {history(first: 25, since: "${sinceDateTime}") {
             nodes {
               committedDate
               messageHeadline
               parents {
                 totalCount
               }
-              associatedPullRequests(first:10) {
+              associatedPullRequests(first:5) {
                 nodes { createdAt number title url author { login } repository { name } }
               }
             }
