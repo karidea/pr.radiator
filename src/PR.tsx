@@ -125,7 +125,7 @@ const TimelineEvent = (props: Event) => {
 };
 
 const PR = (props: any) => {
-  const { createdAt, reviews, comments, baseRefName, author: { login: author}, headRefOid, url, repository, title, commits, showBranch } = props.pr;
+  const { showBranch, pr: { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, url, repository, title, commits }}= props;
   const createdAtDate = new Date(createdAt);
   const events = combineReviewsAndComments(reviews, comments);
   const elapsedTime = <span title={formatRFC3339(createdAtDate)}>{formatDistanceToNowStrict(createdAtDate)} ago</span>;
