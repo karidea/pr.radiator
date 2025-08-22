@@ -5,7 +5,7 @@ import { filterTeamRepos, queryPRs, queryTeamRepos } from './github';
 import KeyboardShortcutsOverlay from './KeyboardShortcutsOverlay';
 
 function useInterval(callback: any, delay: any) {
-  const savedCallback = useRef();
+  const savedCallback = useRef<() => void | null>(null);
 
   useEffect(() => {
     savedCallback.current = callback;

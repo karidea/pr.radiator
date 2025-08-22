@@ -133,12 +133,17 @@ const PR = (props: any) => {
   const reviewState = reviews.nodes.length === 0 && (<FaExclamationCircle className="event-icon unreviewed-icon" title="Unreviewed PR - Needs attention!" />);
   const prLink = <a href={url} target="_blank" rel="noopener noreferrer">{`${repository.name}#${props.pr.number}`}</a>;
   const branch = showBranch ? baseRefName : '';
+  const eventOutput = events.length > 0 && (
+    <>
+      <br />
+      &nbsp;&nbsp;{events.map((event, index) => <TimelineEvent key={index} {...event} />)}
+    </>
+  );
 
   return (
     <div className={getAgeString(createdAtDate)}>
       {elapsedTime} {reviewState} {commitState} {branch} {author} {prLink} {title}
-      <br />
-      &nbsp;&nbsp;{events.map((event, index) => <TimelineEvent key={index} {...event} />)}
+      {eventOutput}
     </div>
   );
 }
