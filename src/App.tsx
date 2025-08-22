@@ -29,7 +29,7 @@ function App() {
   const [recentPRs, setRecentPRs] = useState<any[]>([]);
   const [intervalInput, setIntervalInput] = useState(60);
   const [showDependabotPRs, toggleDependabotPRs] = useState(false);
-  const [showMasterPRs, toggleMasterPRs] = useState(false);
+  const [showMasterPRs, toggleMasterPRs] = useState(true);
   const [showKeyboardShortcuts, toggleShowKeyboardShortcuts] = useState(false);
   const [showRecentPRs, toggleShowRecentPRs] = useState(false);
   const [showRepoLinks, setShowRepoLinks] = useState(false);

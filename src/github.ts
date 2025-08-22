@@ -44,22 +44,21 @@ const BatchQueryPRs = (owner: string, repos: string[], sinceDateTime: string) =>
         }
       }
     }
-isArchived pullRequests(last: 15, states: OPEN) { nodes {
-		title url createdAt baseRefName headRefOid isDraft number
-		participants (first: 10) { nodes { isViewer login }}
-		reviewRequests (first:20) { nodes {requestedReviewer { __typename ... on User { login isViewer } ... on Team { slug members { nodes { login isViewer } } }}}}
-		repository { name }
-		author { login }
-		comments (first: 50) {nodes {
+    isArchived pullRequests(last: 15, states: OPEN) { nodes {
+    title url createdAt baseRefName headRefOid isDraft number
+    participants (first: 10) { nodes { isViewer login }}
+    reviewRequests (first:20) { nodes {requestedReviewer { __typename ... on User { login isViewer } ... on Team { slug members { nodes { login isViewer } } }}}}
+    repository { name }
+    author { login }
+    comments (first: 50) {nodes {
       createdAt author { login }
     }}
-		reviews(first: 50) {nodes {
+    reviews(first: 50) {nodes {
       state createdAt author { login }
     }}
-    timelineItems (last: 1, itemTypes: PULL_REQUEST_COMMIT) {  nodes {  __typename ... on PullRequestCommit { commit {
-oid statusCheckRollup { state }
+    commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}
     }}}}
-}}}`;
+}`;
   }).join(' ');
 
   return `query PRs { ${batchedRepos} }`
