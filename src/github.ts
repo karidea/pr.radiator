@@ -71,7 +71,7 @@ const chunks = (array: string[], chunk_size: number) =>
     .map((begin: any) => array.slice(begin, begin + chunk_size));
 
 export const maxConcurrentBatchQueryPRs = (token: string, owner: string, repos: string[], sinceDateTime: string) => {
-  const result = chunks(repos, 5);
+  const result = chunks(repos, 4);
 
   return result.map((repos: string[]) => {
     return axios({
