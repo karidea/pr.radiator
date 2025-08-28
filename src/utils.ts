@@ -17,3 +17,18 @@ export const byCommittedDateDesc = (a: any, b: any) => {
   }
   return 0;
 }
+
+const progressBar: HTMLDivElement = document.createElement('div');
+progressBar.id = 'progress-bar';
+document.body.appendChild(progressBar);
+
+export function startProgress(): void {
+  progressBar.classList.add('active');
+}
+
+export function stopProgress(): void {
+  progressBar.classList.add('fade-out');
+  setTimeout(() => {
+    progressBar.classList.remove('active', 'fade-out');
+  }, 300); // Matches CSS transition duration
+}

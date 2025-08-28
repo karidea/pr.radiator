@@ -188,3 +188,43 @@ a {
   margin-left: 2px;           /* Small gap after author (tight attachment) */
   margin-right: 0;            /* No extra space after icon within group */
 }
+
+#progress-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(to right, #3a3e44, #49a29f); /* Dark gray to muted teal, matching links */
+  transform: translateX(-100%);
+  transition: transform 0.3s ease-out;
+  opacity: 0.7; /* Subtle, non-distracting */
+  z-index: 9999;
+}
+
+#progress-bar.active {
+  transform: translateX(0);
+  animation: shimmer 1.8s linear infinite; /* Smooth, visible activity */
+}
+
+#progress-bar.fade-out {
+  transform: translateX(100%);
+  opacity: 0;
+  transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -100% 0; /* Tighter range for clear motion */
+  }
+  100% {
+    background-position: 100% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #progress-bar.active {
+    animation: none;
+    background: #49a29f; /* Muted teal for static visibility, matches links */
+  }
+}
