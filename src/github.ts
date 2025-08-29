@@ -57,9 +57,6 @@ const BatchQueryOpenPRs = (owner: string, repos: string[]) => {
     return `${repoFieldAlias}:repository (owner: "${owner}", name: "${repo}") { name
     pullRequests(last: 15, states: OPEN) { nodes {
     title url createdAt baseRefName headRefOid isDraft number
-    participants (first: 10) { nodes { isViewer login }}
-    reviewRequests (first:20) { nodes {requestedReviewer { __typename ... on User { login isViewer } ... on Team { slug members { nodes { login isViewer } } }}}}
-    repository { name }
     author { login }
     comments (first: 50) {nodes {
       createdAt author { login }
@@ -230,9 +227,15 @@ export const queryOpenPRs = async (token: string, owner: string, repos: string[]
   results.forEach((result: any) => {
     const keys = Object.keys(result.data);
     keys.forEach((key) => {
+      const repoName = result.data[key].name;
       const pullRequests = result.data[key]?.pullRequests.nodes ?? [];
-      if (pullRequests.length > 0 && !result.data[key].isArchived) {
-        resultPRs.push(...pullRequests);
+      if (pullRequests.length > 0) {
+        resultPRs.push(
+          ...pullRequests.map((pr: any) => ({
+            ...pr,
+            repository: { name: repoName }
+          }))
+        );
       }
     });
   });
