@@ -2,7 +2,7 @@ import React, { useEffect, FormEvent, useRef, useReducer } from 'react';
 import PR from './PR';
 import RecentPR from './RecentPR';
 import KeyboardShortcutsOverlay from './KeyboardShortcutsOverlay';
-import { filterTeamRepos, queryPRs, queryTeamRepos } from './github';
+import { filterTeamRepos, queryOpenPRs, queryRecentPRs, queryTeamRepos } from './github';
 import { startProgress, stopProgress } from './utils';
 
 interface PRData {
@@ -110,6 +110,33 @@ function useInterval(callback: () => void, delay: number | null) {
 const App: React.FC = () => {
   const [state, dispatch] = useReducer(appReducer, initialState);
 
+  const fetchOpenPRs = async (token: string, owner: string, repos: string[], ignoreRepos: string[]) => {
+    try {
+      startProgress();
+      const filteredRepos = repos.filter(repo => !ignoreRepos.includes(repo));
+      const openPRs = await queryOpenPRs(token, owner, filteredRepos);
+      dispatch({ type: 'SET_PRS', payload: openPRs });
+    } catch (error) {
+      console.log('Failed to fetch open PRs', error);
+    } finally {
+      stopProgress();
+    }
+  };
+
+  const fetchRecentPRs = async (token: string, owner: string, repos: string[], ignoreRepos: string[]) => {
+    try {
+      startProgress();
+      const filteredRepos = repos.filter(repo => !ignoreRepos.includes(repo));
+      const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+      const recentPRs = await queryRecentPRs(token, owner, filteredRepos, sinceTwoWeeksAgo);
+      dispatch({ type: 'SET_RECENT_PRS', payload: recentPRs });
+    } catch (error) {
+      console.log('Failed to fetch recent PRs', error);
+    } finally {
+      stopProgress();
+    }
+  };
+
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const owner = (document.getElementById('owner') as HTMLInputElement).value;
@@ -133,29 +160,23 @@ const App: React.FC = () => {
         dispatch({ type: 'TOGGLE_MASTER' });
       }
       if (event.key === 'a') {
+        const newShowRecentPRs = !state.showRecentPRs;
         dispatch({ type: 'TOGGLE_RECENT_PRS' });
+        if (newShowRecentPRs && state.config.token && state.config.owner && state.config.repos.length > 0 && state.recentPRs.length === 0) {
+          fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch((error) => {
+            console.error('Error in fetchRecentPRs on keydown', error);
+          });
+        }
       }
       if (event.key === 'l') {
         dispatch({ type: 'TOGGLE_REPO_LINKS' });
       }
       if (event.key === 'r') {
-        (async () => {
-          try {
-            startProgress();
-            const filteredRepos = state.config.repos.filter((repo) => !state.config.ignoreRepos.includes(repo));
-            const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-            const PRs = await queryPRs(state.config.token, state.config.owner, filteredRepos, sinceTwoWeeksAgo);
-            dispatch({ type: 'SET_PRS', payload: PRs.resultPRs });
-            dispatch({ type: 'SET_RECENT_PRS', payload: PRs.refCommits });
-          } catch {
-            console.log('Failed to fetch PRs');
-          } finally {
-            stopProgress();
-          }
-        })().catch((error) => {
-          console.error('Unexpected error in PR refresh', error);
-          stopProgress();
-        });
+        if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+          fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch((error) => {
+            console.error('Error in fetchOpenPRs on keydown', error);
+          });
+        }
       }
       if (event.key === '\\' || event.key === 'Backslash') {
         localStorage.removeItem('PR_RADIATOR_REPOS');
@@ -167,7 +188,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
-  }, [state.config, state.showDependabotPRs, state.showMasterPRs, state.showRecentPRs, state.showRepoLinks, state.showKeyboardShortcuts]);
+  }, [state.config, state.showRecentPRs, state.recentPRs.length]);
 
   useEffect(() => {
     async function getTeamRepos(token: string, owner: string, team: string) {
@@ -185,65 +206,47 @@ const App: React.FC = () => {
     }
     if (state.config.token && state.config.owner && state.config.team && state.config.repos.length === 0) {
       getTeamRepos(state.config.token, state.config.owner, state.config.team).catch((error) => {
-        console.error('Error fetching team repos', error);
+        console.error('Error in getTeamRepos', error);
         stopProgress();
       });
     }
   }, [state.config]);
 
   useEffect(() => {
-    async function getPRsFromGithub(token: string, owner: string, repos: string[]) {
-      try {
-        startProgress();
-        const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-        const PRs = await queryPRs(token, owner, repos, sinceTwoWeeksAgo);
-        dispatch({ type: 'SET_PRS', payload: PRs.resultPRs });
-        dispatch({ type: 'SET_RECENT_PRS', payload: PRs.refCommits });
-      } catch {
-        console.log('Failed to fetch PRs');
-      } finally {
-        stopProgress();
-      }
-    }
     if (state.config.token && state.config.owner && state.config.repos.length > 0) {
-      const filteredRepos = state.config.repos.filter((repo) => !state.config.ignoreRepos.includes(repo));
-      getPRsFromGithub(state.config.token, state.config.owner, filteredRepos).catch((error) => {
-        console.error('Error fetching PRs', error);
+      fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch((error) => {
+        console.error('Error in fetchOpenPRs on initial load', error);
         stopProgress();
       });
     }
   }, [state.config]);
 
   useInterval(() => {
-    async function getPRsFromGithub(token: string, owner: string, repos: string[]) {
-      try {
-        startProgress();
-        const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-        const PRs = await queryPRs(token, owner, repos, sinceTwoWeeksAgo);
-        dispatch({ type: 'SET_PRS', payload: PRs.resultPRs });
-        dispatch({ type: 'SET_RECENT_PRS', payload: PRs.refCommits });
-      } catch {
-        console.log('Failed to fetch PRs');
-      } finally {
-        stopProgress();
-      }
-    }
     if (state.config.token && state.config.owner && state.config.repos.length > 0) {
-      const filteredRepos = state.config.repos.filter((repo) => !state.config.ignoreRepos.includes(repo));
-      getPRsFromGithub(state.config.token, state.config.owner, filteredRepos).catch((error) => {
-        console.error('Error fetching PRs', error);
-        stopProgress();
+      fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch((error) => {
+        console.error('Error in fetchOpenPRs on interval', error);
       });
     }
   }, state.config.pollingInterval);
 
+  useEffect(() => {
+    if (state.showRecentPRs && state.config.token && state.config.owner && state.config.repos.length > 0 && state.recentPRs.length === 0) {
+      fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch((error) => {
+        console.error('Error in fetchRecentPRs on show recent PRs', error);
+      });
+    }
+  }, [state.showRecentPRs, state.config, state.recentPRs.length]);
+
   const filterDependabot = (pr: PRData) => state.showDependabotPRs || pr.author.login !== 'dependabot';
   const filterMasterPRs = (pr: PRData) => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main');
-  const displayPRs = state.PRs && state.PRs.length > 0 ? state.PRs.filter(filterDependabot).filter(filterMasterPRs).map((pr) => (
-    <PR key={pr.url} pr={pr} showBranch={state.showMasterPRs} />
-  )) : null;
+  const displayPRs = React.useMemo(() => {
+    if (!state.PRs || state.PRs.length === 0) return null;
+    return state.PRs.filter(filterDependabot).filter(filterMasterPRs).map((pr) => (
+      <PR key={pr.url} pr={pr} showBranch={state.showMasterPRs} />
+    ));
+  }, [state.PRs, state.showDependabotPRs, state.showMasterPRs]);
   const handleOnChange = (e: React.ChangeEvent<HTMLInputElement>) => dispatch({ type: 'SET_INTERVAL_INPUT', payload: parseInt(e.target.value) });
-  const displayRecentPRs = state.showRecentPRs ? state.recentPRs.map((pr) => <RecentPR key={pr.url} pr={pr} />) : null;
+  const displayRecentPRs = React.useMemo(() => state.showRecentPRs && state.recentPRs.length > 0 ? state.recentPRs.map((pr) => <RecentPR key={pr.url} pr={pr} />) : null, [state.showRecentPRs, state.recentPRs]);
 
   if (!state.config.token || !state.config.owner || !state.config.team) {
     return (

@@ -1,4 +1,3 @@
-import axios from 'axios';
 import { sortByCreatedAt, byCommittedDateDesc } from './utils';
 
 const RepositoriesQuery = (owner: string, team: string, next: string | null) => {
@@ -22,9 +21,10 @@ const RepositoriesQuery = (owner: string, team: string, next: string | null) => 
       }
     }
   }
-}`};
+}`;
+};
 
-const BatchQueryPRs = (owner: string, repos: string[], sinceDateTime: string) => {
+const BatchQueryRecentPRs = (owner: string, repos: string[], sinceDateTime: string) => {
   const batchedRepos = repos.map((repo, index) => {
     const repoFieldAlias = 'alias' +  index;
     return `${repoFieldAlias}:repository (owner: "${owner}", name: "${repo}") { name
@@ -44,7 +44,18 @@ const BatchQueryPRs = (owner: string, repos: string[], sinceDateTime: string) =>
         }
       }
     }
-    isArchived pullRequests(last: 15, states: OPEN) { nodes {
+    isArchived
+}`;
+  }).join(' ');
+
+  return `query RecentPRs { ${batchedRepos} }`
+};
+
+const BatchQueryOpenPRs = (owner: string, repos: string[]) => {
+  const batchedRepos = repos.map((repo, index) => {
+    const repoFieldAlias = 'alias' +  index;
+    return `${repoFieldAlias}:repository (owner: "${owner}", name: "${repo}") { name
+    pullRequests(last: 15, states: OPEN) { nodes {
     title url createdAt baseRefName headRefOid isDraft number
     participants (first: 10) { nodes { isViewer login }}
     reviewRequests (first:20) { nodes {requestedReviewer { __typename ... on User { login isViewer } ... on Team { slug members { nodes { login isViewer } } }}}}
@@ -61,7 +72,7 @@ const BatchQueryPRs = (owner: string, repos: string[], sinceDateTime: string) =>
 }`;
   }).join(' ');
 
-  return `query PRs { ${batchedRepos} }`
+  return `query OpenPRs { ${batchedRepos} }`
 };
 
 const chunks = (array: string[], chunk_size: number) =>
@@ -70,17 +81,42 @@ const chunks = (array: string[], chunk_size: number) =>
     .map((_: any, index: number) => index * chunk_size)
     .map((begin: any) => array.slice(begin, begin + chunk_size));
 
-export const maxConcurrentBatchQueryPRs = (token: string, owner: string, repos: string[], sinceDateTime: string) => {
+const maxConcurrentBatchQueryRecentPRs = async (token: string, owner: string, repos: string[], sinceDateTime: string) => {
   const result = chunks(repos, 4);
 
-  return result.map((repos: string[]) => {
-    return axios({
-      url: 'https://api.github.com/graphql',
+  return Promise.all(result.map(async (reposChunk: string[]) => {
+    const response = await fetch('https://api.github.com/graphql', {
       method: 'post',
-      headers: { Authorization: `Bearer ${token}` },
-      data: { query: BatchQueryPRs(owner, repos, sinceDateTime) }
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query: BatchQueryRecentPRs(owner, reposChunk, sinceDateTime) }),
     });
-  });
+    if (!response.ok) {
+      throw new Error(`GraphQL request failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }));
+};
+
+const maxConcurrentBatchQueryOpenPRs = async (token: string, owner: string, repos: string[]) => {
+  const result = chunks(repos, 4);
+
+  return Promise.all(result.map(async (reposChunk: string[]) => {
+    const response = await fetch('https://api.github.com/graphql', {
+      method: 'post',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query: BatchQueryOpenPRs(owner, reposChunk) }),
+    });
+    if (!response.ok) {
+      throw new Error(`GraphQL request failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }));
 };
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -92,12 +128,16 @@ export const filterTeamRepos = async (token: string, owner: string, team: string
 
   const makeRequest = async (repoName: string) => {
     try {
-      const response = await axios.get(`https://api.github.com/repos/${owner}/${repoName}/teams`, {
+      const response = await fetch(`https://api.github.com/repos/${owner}/${repoName}/teams`, {
+        method: 'get',
         headers: {
-          Authorization: `Bearer ${token}`
-        }
+          Authorization: `Bearer ${token}`,
+        },
       });
-      const teams = response.data;
+      if (!response.ok) {
+        throw new Error(`REST request failed: ${response.status} ${response.statusText}`);
+      }
+      const teams = await response.json();
 
       for (const t of teams) {
         if (t.slug === team && t.permission === 'admin') {
@@ -128,14 +168,20 @@ export const queryTeamRepos = async (token: string, owner: string, team: string)
   const repoNames: string[] = [];
 
   while(hasNextPage) {
-    const result: any = await axios({
-      url: 'https://api.github.com/graphql',
+    const response = await fetch('https://api.github.com/graphql', {
       method: 'post',
-      headers: { Authorization: `Bearer ${token}` },
-      data: { query: RepositoriesQuery(owner, team, next) }
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query: RepositoriesQuery(owner, team, next) }),
     });
+    if (!response.ok) {
+      throw new Error(`GraphQL request failed: ${response.status} ${response.statusText}`);
+    }
+    const result = await response.json();
 
-    const repositories: any = result.data.data.organization.team.repositories;
+    const repositories: any = result.data.organization.team.repositories;
 
     repositories.edges.forEach((repo: any) => {
       if (repo.permission === 'ADMIN' && repo.node.isArchived === false) {
@@ -154,20 +200,15 @@ export const queryTeamRepos = async (token: string, owner: string, team: string)
   return repoNames;
 };
 
-export const queryPRs = async (token: string, owner: string, repos: string[], sinceDateTime: string) => {
-  const results = await Promise.all(maxConcurrentBatchQueryPRs(token, owner, repos, sinceDateTime));
-  const resultPRs: any[] = [];
+export const queryRecentPRs = async (token: string, owner: string, repos: string[], sinceDateTime: string) => {
+  const results = await maxConcurrentBatchQueryRecentPRs(token, owner, repos, sinceDateTime);
   const refCommits: any[] = [];
   results.forEach((result: any) => {
-    const keys = Object.keys(result.data.data);
+    const keys = Object.keys(result.data);
     keys.forEach((key) => {
-      const pullRequests = result.data.data[key]?.pullRequests.nodes ?? [];
-      if (pullRequests.length > 0 && !result.data.data[key].isArchived) {
-        resultPRs.push(...pullRequests);
-      }
-      const keyRefCommits = result.data.data[key]?.ref?.target?.history?.nodes ?? [];
+      const keyRefCommits = result.data[key]?.ref?.target?.history?.nodes ?? [];
       if (keyRefCommits.length > 0) {
-        refCommits.push(result.data.data[key].ref);
+        refCommits.push(result.data[key].ref);
       }
     });
   });
@@ -180,5 +221,30 @@ export const queryPRs = async (token: string, owner: string, repos: string[], si
   }) : null));
   const filteredRecentPRs = [...new Set(recentPullRequests.map(pr => pr.url))].map(url => recentPullRequests.find(pr => pr.url === url));
 
-  return { refCommits: filteredRecentPRs.sort(byCommittedDateDesc), resultPRs: resultPRs.sort(sortByCreatedAt).filter(pr => !pr.isDraft) };
+  return filteredRecentPRs.sort(byCommittedDateDesc);
+};
+
+export const queryOpenPRs = async (token: string, owner: string, repos: string[]) => {
+  const results = await maxConcurrentBatchQueryOpenPRs(token, owner, repos);
+  const resultPRs: any[] = [];
+  results.forEach((result: any) => {
+    const keys = Object.keys(result.data);
+    keys.forEach((key) => {
+      const pullRequests = result.data[key]?.pullRequests.nodes ?? [];
+      if (pullRequests.length > 0 && !result.data[key].isArchived) {
+        resultPRs.push(...pullRequests);
+      }
+    });
+  });
+
+  return resultPRs.sort(sortByCreatedAt).filter(pr => !pr.isDraft);
+};
+
+export const queryPRs = async (token: string, owner: string, repos: string[], sinceDateTime: string) => {
+  const [recentPRs, openPRs] = await Promise.all([
+    queryRecentPRs(token, owner, repos, sinceDateTime),
+    queryOpenPRs(token, owner, repos)
+  ]);
+
+  return { refCommits: recentPRs, resultPRs: openPRs };
 }

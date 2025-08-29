@@ -1,6 +1,6 @@
 {
   "name": "pr.radiator",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,6 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "axios": "^1.11.0",
     "date-fns": "^4.1.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
