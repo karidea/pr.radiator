@@ -162,7 +162,7 @@ const App: React.FC = () => {
       if (event.key === 'a') {
         const newShowRecentPRs = !state.showRecentPRs;
         dispatch({ type: 'TOGGLE_RECENT_PRS' });
-        if (newShowRecentPRs && state.config.token && state.config.owner && state.config.repos.length > 0 && state.recentPRs.length === 0) {
+        if (newShowRecentPRs && state.config.token && state.config.owner && state.config.repos.length > 0) {
           fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch((error) => {
             console.error('Error in fetchRecentPRs on keydown', error);
           });
@@ -188,7 +188,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
-  }, [state.config, state.showRecentPRs, state.recentPRs.length]);
+  }, [state.config, state.showRecentPRs]);
 
   useEffect(() => {
     async function getTeamRepos(token: string, owner: string, team: string) {
@@ -230,12 +230,12 @@ const App: React.FC = () => {
   }, state.config.pollingInterval);
 
   useEffect(() => {
-    if (state.showRecentPRs && state.config.token && state.config.owner && state.config.repos.length > 0 && state.recentPRs.length === 0) {
+    if (state.showRecentPRs && state.config.token && state.config.owner && state.config.repos.length > 0) {
       fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch((error) => {
         console.error('Error in fetchRecentPRs on show recent PRs', error);
       });
     }
-  }, [state.showRecentPRs, state.config, state.recentPRs.length]);
+  }, [state.showRecentPRs, state.config]);
 
   const filterDependabot = (pr: PRData) => state.showDependabotPRs || pr.author.login !== 'dependabot';
   const filterMasterPRs = (pr: PRData) => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main');
