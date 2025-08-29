@@ -1,11 +1,10 @@
-import React, { useEffect, useState, FormEvent, useRef } from 'react';
+import React, { useEffect, FormEvent, useRef, useReducer } from 'react';
 import PR from './PR';
 import RecentPR from './RecentPR';
-import { filterTeamRepos, queryPRs, queryTeamRepos } from './github';
 import KeyboardShortcutsOverlay from './KeyboardShortcutsOverlay';
+import { filterTeamRepos, queryPRs, queryTeamRepos } from './github';
 import { startProgress, stopProgress } from './utils';
 
-// Define types for PR and config
 interface PRData {
   url: string;
   author: { login: string };
@@ -13,14 +12,82 @@ interface PRData {
   [key: string]: any; // For other dynamic properties
 }
 
-interface Config {
-  token: string;
-  owner: string;
-  team: string;
-  repos: string[];
-  pollingInterval: number;
-  ignoreRepos: string[];
+interface AppState {
+  config: {
+    token: string;
+    owner: string;
+    team: string;
+    repos: string[];
+    pollingInterval: number;
+    ignoreRepos: string[];
+  };
+  PRs: PRData[];
+  recentPRs: PRData[];
+  intervalInput: number;
+  showDependabotPRs: boolean;
+  showMasterPRs: boolean;
+  showKeyboardShortcuts: boolean;
+  showRecentPRs: boolean;
+  showRepoLinks: boolean;
 }
+
+type AppAction =
+  | { type: 'SET_CONFIG'; payload: Partial<AppState['config']> }
+  | { type: 'SET_PRS'; payload: PRData[] }
+  | { type: 'SET_RECENT_PRS'; payload: PRData[] }
+  | { type: 'SET_INTERVAL_INPUT'; payload: number }
+  | { type: 'TOGGLE_DEPENDABOT' }
+  | { type: 'TOGGLE_MASTER' }
+  | { type: 'TOGGLE_KEYBOARD_SHORTCUTS' }
+  | { type: 'TOGGLE_RECENT_PRS' }
+  | { type: 'TOGGLE_REPO_LINKS' }
+  | { type: 'RESET_REPOS' };
+
+const initialState: AppState = {
+  config: {
+    token: localStorage.getItem('PR_RADIATOR_TOKEN') ?? '',
+    owner: localStorage.getItem('PR_RADIATOR_OWNER') ?? '',
+    team: localStorage.getItem('PR_RADIATOR_TEAM') ?? '',
+    repos: JSON.parse(localStorage.getItem('PR_RADIATOR_REPOS') ?? '[]'),
+    pollingInterval: parseInt(localStorage.getItem('PR_RADIATOR_POLLING_INTERVAL') ?? '0'),
+    ignoreRepos: JSON.parse(localStorage.getItem('PR_RADIATOR_IGNORE_REPOS') ?? '[]'),
+  },
+  PRs: [],
+  recentPRs: [],
+  intervalInput: 60,
+  showDependabotPRs: false,
+  showMasterPRs: true,
+  showKeyboardShortcuts: false,
+  showRecentPRs: false,
+  showRepoLinks: false,
+};
+
+const appReducer = (state: AppState, action: AppAction): AppState => {
+  switch (action.type) {
+    case 'SET_CONFIG':
+      return { ...state, config: { ...state.config, ...action.payload } };
+    case 'SET_PRS':
+      return { ...state, PRs: action.payload };
+    case 'SET_RECENT_PRS':
+      return { ...state, recentPRs: action.payload };
+    case 'SET_INTERVAL_INPUT':
+      return { ...state, intervalInput: action.payload };
+    case 'TOGGLE_DEPENDABOT':
+      return { ...state, showDependabotPRs: !state.showDependabotPRs };
+    case 'TOGGLE_MASTER':
+      return { ...state, showMasterPRs: !state.showMasterPRs };
+    case 'TOGGLE_KEYBOARD_SHORTCUTS':
+      return { ...state, showKeyboardShortcuts: !state.showKeyboardShortcuts };
+    case 'TOGGLE_RECENT_PRS':
+      return { ...state, showRecentPRs: !state.showRecentPRs };
+    case 'TOGGLE_REPO_LINKS':
+      return { ...state, showRepoLinks: !state.showRepoLinks };
+    case 'RESET_REPOS':
+      return { ...state, config: { ...state.config, repos: [] }, PRs: [], recentPRs: [] };
+    default:
+      return state;
+  }
+};
 
 function useInterval(callback: () => void, delay: number | null) {
   const savedCallback = useRef<() => void>(callback);
@@ -41,22 +108,7 @@ function useInterval(callback: () => void, delay: number | null) {
 }
 
 const App: React.FC = () => {
-  const [PRs, setPRs] = useState<PRData[]>([]);
-  const [recentPRs, setRecentPRs] = useState<PRData[]>([]);
-  const [intervalInput, setIntervalInput] = useState(60);
-  const [showDependabotPRs, toggleDependabotPRs] = useState(false);
-  const [showMasterPRs, toggleMasterPRs] = useState(true);
-  const [showKeyboardShortcuts, toggleShowKeyboardShortcuts] = useState(false);
-  const [showRecentPRs, toggleShowRecentPRs] = useState(false);
-  const [showRepoLinks, setShowRepoLinks] = useState(false);
-  const [config, setConfig] = useState<Config>(() => ({
-    token: localStorage.getItem('PR_RADIATOR_TOKEN') ?? '',
-    owner: localStorage.getItem('PR_RADIATOR_OWNER') ?? '',
-    team: localStorage.getItem('PR_RADIATOR_TEAM') ?? '',
-    repos: JSON.parse(localStorage.getItem('PR_RADIATOR_REPOS') ?? '[]'),
-    pollingInterval: parseInt(localStorage.getItem('PR_RADIATOR_POLLING_INTERVAL') ?? '0'),
-    ignoreRepos: JSON.parse(localStorage.getItem('PR_RADIATOR_IGNORE_REPOS') ?? '[]'),
-  }));
+  const [state, dispatch] = useReducer(appReducer, initialState);
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -69,32 +121,32 @@ const App: React.FC = () => {
     localStorage.setItem('PR_RADIATOR_TOKEN', token);
     localStorage.setItem('PR_RADIATOR_TEAM', team);
     localStorage.setItem('PR_RADIATOR_POLLING_INTERVAL', pollingInterval.toString());
-    setConfig({ ...config, team, token, owner, pollingInterval });
+    dispatch({ type: 'SET_CONFIG', payload: { team, token, owner, pollingInterval } });
   };
 
   useEffect(() => {
     const onKeydown = (event: KeyboardEvent) => {
       if (event.key === 'd') {
-        toggleDependabotPRs(!showDependabotPRs);
+        dispatch({ type: 'TOGGLE_DEPENDABOT' });
       }
       if (event.key === 'm') {
-        toggleMasterPRs(!showMasterPRs);
+        dispatch({ type: 'TOGGLE_MASTER' });
       }
       if (event.key === 'a') {
-        toggleShowRecentPRs(!showRecentPRs);
+        dispatch({ type: 'TOGGLE_RECENT_PRS' });
       }
       if (event.key === 'l') {
-        setShowRepoLinks(!showRepoLinks);
+        dispatch({ type: 'TOGGLE_REPO_LINKS' });
       }
       if (event.key === 'r') {
         (async () => {
           try {
             startProgress();
-            const filteredRepos = config.repos.filter((repo) => !config.ignoreRepos.includes(repo));
+            const filteredRepos = state.config.repos.filter((repo) => !state.config.ignoreRepos.includes(repo));
             const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-            const PRs = await queryPRs(config.token, config.owner, filteredRepos, sinceTwoWeeksAgo);
-            setPRs(PRs.resultPRs);
-            setRecentPRs(PRs.refCommits);
+            const PRs = await queryPRs(state.config.token, state.config.owner, filteredRepos, sinceTwoWeeksAgo);
+            dispatch({ type: 'SET_PRS', payload: PRs.resultPRs });
+            dispatch({ type: 'SET_RECENT_PRS', payload: PRs.refCommits });
           } catch {
             console.log('Failed to fetch PRs');
           } finally {
@@ -107,17 +159,15 @@ const App: React.FC = () => {
       }
       if (event.key === '\\' || event.key === 'Backslash') {
         localStorage.removeItem('PR_RADIATOR_REPOS');
-        setConfig({ ...config, repos: [] });
-        setPRs([]);
-        setRecentPRs([]);
+        dispatch({ type: 'RESET_REPOS' });
       }
       if (event.key === '?' && event.shiftKey) {
-        toggleShowKeyboardShortcuts(!showKeyboardShortcuts);
+        dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' });
       }
     };
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
-  }, [showDependabotPRs, showMasterPRs, showRecentPRs, showRepoLinks, showKeyboardShortcuts, config]);
+  }, [state.config, state.showDependabotPRs, state.showMasterPRs, state.showRecentPRs, state.showRepoLinks, state.showKeyboardShortcuts]);
 
   useEffect(() => {
     async function getTeamRepos(token: string, owner: string, team: string) {
@@ -126,20 +176,20 @@ const App: React.FC = () => {
         const repos = await queryTeamRepos(token, owner, team);
         const filteredRepos = await filterTeamRepos(token, owner, team, repos);
         localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
-        setConfig({ ...config, repos: filteredRepos });
+        dispatch({ type: 'SET_CONFIG', payload: { repos: filteredRepos } });
       } catch {
         console.log('Failed to fetch team repos');
       } finally {
         stopProgress();
       }
     }
-    if (config.token && config.owner && config.team && config.repos.length === 0) {
-      getTeamRepos(config.token, config.owner, config.team).catch((error) => {
+    if (state.config.token && state.config.owner && state.config.team && state.config.repos.length === 0) {
+      getTeamRepos(state.config.token, state.config.owner, state.config.team).catch((error) => {
         console.error('Error fetching team repos', error);
         stopProgress();
       });
     }
-  }, [config]);
+  }, [state.config]);
 
   useEffect(() => {
     async function getPRsFromGithub(token: string, owner: string, repos: string[]) {
@@ -147,22 +197,22 @@ const App: React.FC = () => {
         startProgress();
         const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
         const PRs = await queryPRs(token, owner, repos, sinceTwoWeeksAgo);
-        setPRs(PRs.resultPRs);
-        setRecentPRs(PRs.refCommits);
+        dispatch({ type: 'SET_PRS', payload: PRs.resultPRs });
+        dispatch({ type: 'SET_RECENT_PRS', payload: PRs.refCommits });
       } catch {
         console.log('Failed to fetch PRs');
       } finally {
         stopProgress();
       }
     }
-    if (config.token && config.owner && config.repos.length > 0) {
-      const filteredRepos = config.repos.filter((repo) => !config.ignoreRepos.includes(repo));
-      getPRsFromGithub(config.token, config.owner, filteredRepos).catch((error) => {
+    if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+      const filteredRepos = state.config.repos.filter((repo) => !state.config.ignoreRepos.includes(repo));
+      getPRsFromGithub(state.config.token, state.config.owner, filteredRepos).catch((error) => {
         console.error('Error fetching PRs', error);
         stopProgress();
       });
     }
-  }, [config]);
+  }, [state.config]);
 
   useInterval(() => {
     async function getPRsFromGithub(token: string, owner: string, repos: string[]) {
@@ -170,39 +220,39 @@ const App: React.FC = () => {
         startProgress();
         const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
         const PRs = await queryPRs(token, owner, repos, sinceTwoWeeksAgo);
-        setPRs(PRs.resultPRs);
-        setRecentPRs(PRs.refCommits);
+        dispatch({ type: 'SET_PRS', payload: PRs.resultPRs });
+        dispatch({ type: 'SET_RECENT_PRS', payload: PRs.refCommits });
       } catch {
         console.log('Failed to fetch PRs');
       } finally {
         stopProgress();
       }
     }
-    if (config.token && config.owner && config.repos.length > 0) {
-      const filteredRepos = config.repos.filter((repo) => !config.ignoreRepos.includes(repo));
-      getPRsFromGithub(config.token, config.owner, filteredRepos).catch((error) => {
+    if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+      const filteredRepos = state.config.repos.filter((repo) => !state.config.ignoreRepos.includes(repo));
+      getPRsFromGithub(state.config.token, state.config.owner, filteredRepos).catch((error) => {
         console.error('Error fetching PRs', error);
         stopProgress();
       });
     }
-  }, config.pollingInterval);
+  }, state.config.pollingInterval);
 
-  const filterDependabot = (pr: PRData) => showDependabotPRs || pr.author.login !== 'dependabot';
-  const filterMasterPRs = (pr: PRData) => showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main');
-  const displayPRs = PRs && PRs.length > 0 ? PRs.filter(filterDependabot).filter(filterMasterPRs).map((pr) => (
-    <PR key={pr.url} pr={pr} showBranch={showMasterPRs} />
+  const filterDependabot = (pr: PRData) => state.showDependabotPRs || pr.author.login !== 'dependabot';
+  const filterMasterPRs = (pr: PRData) => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main');
+  const displayPRs = state.PRs && state.PRs.length > 0 ? state.PRs.filter(filterDependabot).filter(filterMasterPRs).map((pr) => (
+    <PR key={pr.url} pr={pr} showBranch={state.showMasterPRs} />
   )) : null;
-  const handleOnChange = (e: React.ChangeEvent<HTMLInputElement>) => setIntervalInput(parseInt(e.target.value));
-  const displayRecentPRs = showRecentPRs ? recentPRs.map((pr) => <RecentPR key={pr.url} pr={pr} />) : null;
+  const handleOnChange = (e: React.ChangeEvent<HTMLInputElement>) => dispatch({ type: 'SET_INTERVAL_INPUT', payload: parseInt(e.target.value) });
+  const displayRecentPRs = state.showRecentPRs ? state.recentPRs.map((pr) => <RecentPR key={pr.url} pr={pr} />) : null;
 
-  if (!config.token || !config.owner || !config.team) {
+  if (!state.config.token || !state.config.owner || !state.config.team) {
     return (
       <div className="settings-form">
         <h1>Configure PR Radiator</h1>
         <form autoComplete="off" onSubmit={onSubmit}>
-          <input type="text" id="owner" placeholder="github-organization" autoFocus={true} autoComplete="off" defaultValue={config.owner} />
-          <input type="text" id="team" placeholder="github-team-name" autoComplete="off" defaultValue={config.team} />
-          <input type="password" id="token" placeholder="Github Personal Access Token" autoComplete="new-password" defaultValue={config.token} />
+          <input type="text" id="owner" placeholder="github-organization" autoFocus={true} autoComplete="off" defaultValue={state.config.owner} />
+          <input type="text" id="team" placeholder="github-team-name" autoComplete="off" defaultValue={state.config.team} />
+          <input type="password" id="token" placeholder="Github Personal Access Token" autoComplete="new-password" defaultValue={state.config.token} />
           <a
             href="https://github.com/settings/tokens"
             target="_blank"
@@ -215,7 +265,7 @@ const App: React.FC = () => {
           <span> - Generate a personal access token with read:org and repo scopes</span>
           <div>
             Github Polling Interval{' '}
-            <input type="number" id="polling-interval" onChange={handleOnChange} value={intervalInput} min="5" /> (seconds)
+            <input type="number" id="polling-interval" onChange={handleOnChange} value={state.intervalInput} min="5" /> (seconds)
           </div>
           <input type="submit" value="Begin" id="submit" />
         </form>
@@ -223,34 +273,34 @@ const App: React.FC = () => {
     );
   }
 
-  if (config.repos.length === 0) {
-    return <div>{`Fetching ${config.team} team repositories...`}</div>;
+  if (state.config.repos.length === 0) {
+    return <div>{`Fetching ${state.config.team} team repositories...`}</div>;
   }
 
-  if (showRepoLinks) {
+  if (state.showRepoLinks) {
     return (
       <div className="App">
-        <h1>{config.team} repositories ({config.repos.length})</h1>
+        <h1>{state.config.team} repositories ({state.config.repos.length})</h1>
         <ul>
-          {config.repos.map((repo) => (
+          {state.config.repos.map((repo) => (
             <li key={repo}>
-              <a href={`https://github.com/${config.owner}/${repo}`} target="_blank" rel="noopener noreferrer">
+              <a href={`https://github.com/${state.config.owner}/${repo}`} target="_blank" rel="noopener noreferrer">
                 {repo}
               </a>
             </li>
           ))}
         </ul>
-        {showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => toggleShowKeyboardShortcuts(false)} />}
+        {state.showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
       </div>
     );
   }
 
-  if (showRecentPRs) {
+  if (state.showRecentPRs) {
     document.title = `PR Radiator`;
     return (
       <div className="App">
         {displayRecentPRs}
-        {showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => toggleShowKeyboardShortcuts(false)} />}
+        {state.showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
       </div>
     );
   }
@@ -260,7 +310,7 @@ const App: React.FC = () => {
     return (
       <div className="App">
         No PRs found
-        {showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => toggleShowKeyboardShortcuts(false)} />}
+        {state.showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
       </div>
     );
   }
@@ -268,7 +318,7 @@ const App: React.FC = () => {
   return (
     <div className="App">
       {displayPRs}
-      {showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => toggleShowKeyboardShortcuts(false)} />}
+      {state.showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
     </div>
   );
 };
