@@ -1,12 +1,30 @@
-import { addWeeks, addDays, addHours, isAfter, format, formatRFC3339, formatDistanceToNowStrict, parseISO } from 'date-fns';
+import { useState, useEffect } from 'react';
+import {
+  addWeeks,
+  addDays,
+  addHours,
+  isAfter,
+  format,
+  formatRFC3339,
+  formatDistanceToNow,
+  parseISO
+} from 'date-fns';
 import { sortByCreatedAt } from './utils';
-import { FaCheck, FaCommentDots, FaExclamationTriangle, FaHourglassHalf, FaTimes, FaMinus, FaExclamationCircle } from 'react-icons/fa';  // Or other icons
+import {
+  FaCheck,
+  FaCommentDots,
+  FaExclamationTriangle,
+  FaHourglassHalf,
+  FaTimes,
+  FaMinus,
+  FaExclamationCircle
+} from 'react-icons/fa';
 
 type Event = {
   createdAt: string;
   author: string;
   state: string;
-  count?: number;  // Added: for clumped events (e.g., 3 if grouped)
+  count?: number;
 }
 
 const combineReviewsAndComments = (reviews: any, comments: any) => {
@@ -25,7 +43,7 @@ const combineReviewsAndComments = (reviews: any, comments: any) => {
     events.push({
       createdAt: comment.createdAt,
       author: comment.author.login,
-      state: 'COMMENTED',  // Normalize
+      state: 'COMMENTED',
     });
   });
 
@@ -69,17 +87,16 @@ const getAgeString = (createdAt: Date) => {
 const getCommitState = (headRefOid: string, commits: any) => {
   const node = commits.nodes.find((node: any) => node.commit.oid === headRefOid);
 
-  // Map conclusions to Fa icons (customize as needed to match your theme)
   const icons: any = {
     'SUCCESS': <FaCheck className="event-icon" />,
-    'PENDING': <FaHourglassHalf className="event-icon" />,  // Hourglass for pending
+    'PENDING': <FaHourglassHalf className="event-icon" />,
     'FAILURE': <FaTimes className="event-icon" />,
-    'EXPECTED': <FaHourglassHalf className="event-icon" />,  // Same as pending
-    'ERROR': <FaExclamationTriangle className="event-icon" />  // Warning triangle for error
+    'EXPECTED': <FaHourglassHalf className="event-icon" />,
+    'ERROR': <FaExclamationTriangle className="event-icon" />
   };
 
   const conclusion: any = node?.commit?.statusCheckRollup?.state || 'ERROR';
-  const icon = icons[conclusion] || <FaMinus className="event-icon" />;  // Fallback to minus
+  const icon = icons[conclusion] || <FaMinus className="event-icon" />;
   const className = conclusion.toLowerCase();
 
   return <span className={className}>{icon}</span>;
@@ -87,10 +104,9 @@ const getCommitState = (headRefOid: string, commits: any) => {
 
 const TimelineEvent = (props: Event) => {
   const countBadge = (props.count ?? 1) > 1 ? `(${props.count})` : '';
-  const authorWithCount = `${props.author}${countBadge}`;  // e.g., "alice(2)"
+  const authorWithCount = `${props.author}${countBadge}`;
 
-  // Format tooltip text (customize as needed; includes state, author/count, and readable timestamp)
-  const formattedDate = format(parseISO(props.createdAt), 'PPPpp');  // e.g., "Oct 1, 2023, 12:00 PM"
+  const formattedDate = format(parseISO(props.createdAt), 'PPPpp');
   let tooltip = `${authorWithCount} ${props.state.toLowerCase()} at ${formattedDate}`;
 
   if (props.state === 'APPROVED') {
@@ -100,7 +116,7 @@ const TimelineEvent = (props: Event) => {
       </span>
     );
   } else if (props.state === 'CHANGES_REQUESTED') {
-    tooltip = `${authorWithCount} requested changes at ${formattedDate}`;  // Customize per state
+    tooltip = `${authorWithCount} requested changes at ${formattedDate}`;
     return (
       <span className="event-group changes-requested" title={tooltip}>
         {authorWithCount} <FaTimes className="event-icon" />
@@ -127,8 +143,18 @@ const TimelineEvent = (props: Event) => {
 const PR = (props: any) => {
   const { showBranch, pr: { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, url, repository, title, commits }}= props;
   const createdAtDate = new Date(createdAt);
+
+  const [elapsedTimeStr, setElapsedTimeStr] = useState(formatDistanceToNow(createdAtDate, { addSuffix: true, includeSeconds: true }));
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setElapsedTimeStr(formatDistanceToNow(createdAtDate, { addSuffix: true, includeSeconds: true }));
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [createdAt]);
+
+  const elapsedTime = <span title={formatRFC3339(createdAtDate)}>{elapsedTimeStr}</span>;
   const events = combineReviewsAndComments(reviews, comments);
-  const elapsedTime = <span title={formatRFC3339(createdAtDate)}>{formatDistanceToNowStrict(createdAtDate)} ago</span>;
   const commitState = getCommitState(headRefOid, commits);
   const reviewState = reviews.nodes.length === 0 && (<FaExclamationCircle className="event-icon unreviewed-icon" title="Unreviewed PR - Needs attention!" />);
   const prLink = <a href={url} target="_blank" rel="noopener noreferrer">{`${repository.name}#${props.pr.number}`}</a>;
