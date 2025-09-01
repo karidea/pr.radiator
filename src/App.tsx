@@ -1,9 +1,6 @@
 import React, { useEffect, FormEvent, useRef, useReducer } from 'react';
 import PR from './PR';
-import RecentPR from './RecentPR';
-import KeyboardShortcutsOverlay from './KeyboardShortcutsOverlay';
 import { filterTeamRepos, queryOpenPRs, queryRecentPRs, queryTeamRepos } from './github';
-import { startProgress, stopProgress } from './utils';
 
 interface PRData {
   url: string;
@@ -106,6 +103,21 @@ function useInterval(callback: () => void, delay: number | null) {
     }
   }, [delay]);
 }
+
+const progressBar = document.getElementById('progress-bar') as HTMLDivElement;
+
+const startProgress = () => {
+  if (progressBar) progressBar.classList.add('active');
+};
+
+const stopProgress = () => {
+  if (progressBar) {
+    progressBar.classList.add('fade-out');
+    setTimeout(() => {
+      if (progressBar) progressBar.classList.remove('active', 'fade-out');
+    }, 300);
+  }
+};
 
 const App: React.FC = () => {
   const [state, dispatch] = useReducer(appReducer, initialState);
@@ -246,7 +258,25 @@ const App: React.FC = () => {
     ));
   }, [state.PRs, state.showDependabotPRs, state.showMasterPRs]);
   const handleOnChange = (e: React.ChangeEvent<HTMLInputElement>) => dispatch({ type: 'SET_INTERVAL_INPUT', payload: parseInt(e.target.value) });
-  const displayRecentPRs = React.useMemo(() => state.showRecentPRs && state.recentPRs.length > 0 ? state.recentPRs.map((pr) => <RecentPR key={pr.url} pr={pr} />) : null, [state.showRecentPRs, state.recentPRs]);
+  const displayRecentPRs = React.useMemo(() => state.showRecentPRs && state.recentPRs.length > 0 ? state.recentPRs.map((pr) => <PR key={pr.url} pr={pr} isRecent={state.showRecentPRs} />) : null, [state.showRecentPRs, state.recentPRs]);
+
+  const ShortcutsOverlay = ({ onClose }: { onClose: () => void }) => (
+    <div className="keyboard-shortcuts-overlay" onClick={onClose}>
+      <div className="keyboard-shortcuts-content">
+        <h2>Shortcuts</h2>
+        <ul>
+          <li><strong>d</strong>: Toggle Dependabot</li>
+          <li><strong>a</strong>: Toggle Recent PRs</li>
+          <li><strong>m</strong>: Toggle Master PRs</li>
+          <li><strong>l</strong>: Toggle Repo Links</li>
+          <li><strong>r</strong>: Refresh PRs</li>
+          <li><strong>\</strong>: Reset Repos</li>
+          <li><strong>?</strong>: This Overlay</li>
+        </ul>
+      </div>
+    </div>
+  );
+
 
   if (!state.config.token || !state.config.owner || !state.config.team) {
     return (
@@ -293,7 +323,7 @@ const App: React.FC = () => {
             </li>
           ))}
         </ul>
-        {state.showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
+        {state.showKeyboardShortcuts && <ShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
       </div>
     );
   }
@@ -303,7 +333,7 @@ const App: React.FC = () => {
     return (
       <div className="App">
         {displayRecentPRs}
-        {state.showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
+        {state.showKeyboardShortcuts && <ShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
       </div>
     );
   }
@@ -313,7 +343,7 @@ const App: React.FC = () => {
     return (
       <div className="App">
         No PRs found
-        {state.showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
+        {state.showKeyboardShortcuts && <ShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
       </div>
     );
   }
@@ -321,7 +351,7 @@ const App: React.FC = () => {
   return (
     <div className="App">
       {displayPRs}
-      {state.showKeyboardShortcuts && <KeyboardShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
+      {state.showKeyboardShortcuts && <ShortcutsOverlay onClose={() => dispatch({ type: 'TOGGLE_KEYBOARD_SHORTCUTS' })} />}
     </div>
   );
 };

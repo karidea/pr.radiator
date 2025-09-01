@@ -1,4 +1,6 @@
-import { sortByCreatedAt, byCommittedDateDesc } from './utils';
+export const sortByCreatedAt = (a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+
+const byCommittedDateDesc = (a: any, b: any) => new Date(b.committedDate).getTime() - new Date(a.committedDate).getTime();
 
 const RepositoriesQuery = (owner: string, team: string, next: string | null) => {
   const after: string = next ? `"${next}"`: 'null';
@@ -242,12 +244,3 @@ export const queryOpenPRs = async (token: string, owner: string, repos: string[]
 
   return resultPRs.sort(sortByCreatedAt).filter(pr => !pr.isDraft);
 };
-
-export const queryPRs = async (token: string, owner: string, repos: string[], sinceDateTime: string) => {
-  const [recentPRs, openPRs] = await Promise.all([
-    queryRecentPRs(token, owner, repos, sinceDateTime),
-    queryOpenPRs(token, owner, repos)
-  ]);
-
-  return { refCommits: recentPRs, resultPRs: openPRs };
-}

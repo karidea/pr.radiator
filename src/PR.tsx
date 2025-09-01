@@ -9,7 +9,7 @@ import {
   formatDistanceToNow,
   parseISO
 } from 'date-fns';
-import { sortByCreatedAt } from './utils';
+import { sortByCreatedAt } from './github';
 import {
   FaCheck,
   FaCommentDots,
@@ -141,23 +141,39 @@ const TimelineEvent = (props: Event) => {
 };
 
 const PR = (props: any) => {
-  const { showBranch, pr: { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, url, repository, title, commits }}= props;
-  const createdAtDate = new Date(createdAt);
+  const { pr: prProps, showBranch, isRecent = false } = props;
+  const pr = prProps; // Keep the same object
 
-  const [elapsedTimeStr, setElapsedTimeStr] = useState(formatDistanceToNow(createdAtDate, { addSuffix: true, includeSeconds: true }));
+  const dateKey = isRecent ? 'committedDate' : 'createdAt';
+  const date = new Date(pr[dateKey]);
+
+  const [elapsedTimeStr, setElapsedTimeStr] = useState(formatDistanceToNow(date, { addSuffix: true, includeSeconds: true }));
   useEffect(() => {
     const interval = setInterval(() => {
-      setElapsedTimeStr(formatDistanceToNow(createdAtDate, { addSuffix: true, includeSeconds: true }));
+      setElapsedTimeStr(formatDistanceToNow(date, { addSuffix: true, includeSeconds: true }));
     }, 5000);
-
     return () => clearInterval(interval);
-  }, [createdAt]);
+  }, [date]);
 
-  const elapsedTime = <span title={formatRFC3339(createdAtDate)}>{elapsedTimeStr}</span>;
+  const elapsedTime = <span title={formatRFC3339(date)}>{elapsedTimeStr}</span>;
+
+  if (isRecent) {
+    return (
+      <div>
+        {elapsedTime} {pr.author.login}&nbsp;
+        <a href={pr.url} target="_blank" rel="noopener noreferrer">{`${pr.repository.name}/pull/${pr.number}`}</a>&nbsp;
+        {pr.title}
+      </div>
+    );
+  }
+
+  const { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, url, repository, title, commits } = pr;
+  const createdAtDate = new Date(createdAt);
+
   const events = combineReviewsAndComments(reviews, comments);
   const commitState = getCommitState(headRefOid, commits);
   const reviewState = reviews.nodes.length === 0 && (<FaExclamationCircle className="event-icon unreviewed-icon" title="Unreviewed PR - Needs attention!" />);
-  const prLink = <a href={url} target="_blank" rel="noopener noreferrer">{`${repository.name}#${props.pr.number}`}</a>;
+  const prLink = <a href={url} target="_blank" rel="noopener noreferrer">{`${repository.name}#${pr.number}`}</a>;
   const branch = showBranch ? baseRefName : '';
   const eventOutput = events.length > 0 && (
     <>
