@@ -23,6 +23,7 @@ interface AppState {
   intervalInput: number;
   showDependabotPRs: boolean;
   showMasterPRs: boolean;
+  showNeedsReviewPRs: boolean;
   showKeyboardShortcuts: boolean;
   showRecentPRs: boolean;
   showRepoLinks: boolean;
@@ -35,6 +36,7 @@ type AppAction =
   | { type: 'SET_INTERVAL_INPUT'; payload: number }
   | { type: 'TOGGLE_DEPENDABOT' }
   | { type: 'TOGGLE_MASTER' }
+  | { type: 'TOGGLE_NEEDS_REVIEW' }
   | { type: 'TOGGLE_KEYBOARD_SHORTCUTS' }
   | { type: 'TOGGLE_RECENT_PRS' }
   | { type: 'TOGGLE_REPO_LINKS' }
@@ -54,6 +56,7 @@ const initialState: AppState = {
   intervalInput: 60,
   showDependabotPRs: false,
   showMasterPRs: true,
+  showNeedsReviewPRs: false,
   showKeyboardShortcuts: false,
   showRecentPRs: false,
   showRepoLinks: false,
@@ -73,6 +76,8 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
       return { ...state, showDependabotPRs: !state.showDependabotPRs };
     case 'TOGGLE_MASTER':
       return { ...state, showMasterPRs: !state.showMasterPRs };
+    case 'TOGGLE_NEEDS_REVIEW':
+      return { ...state, showNeedsReviewPRs: !state.showNeedsReviewPRs };
     case 'TOGGLE_KEYBOARD_SHORTCUTS':
       return { ...state, showKeyboardShortcuts: !state.showKeyboardShortcuts };
     case 'TOGGLE_RECENT_PRS':
@@ -171,6 +176,9 @@ const App: React.FC = () => {
       if (event.key === 'm') {
         dispatch({ type: 'TOGGLE_MASTER' });
       }
+      if (event.key === 'n') {
+        dispatch({ type: 'TOGGLE_NEEDS_REVIEW' });
+      }
       if (event.key === 'a') {
         const newShowRecentPRs = !state.showRecentPRs;
         dispatch({ type: 'TOGGLE_RECENT_PRS' });
@@ -251,27 +259,30 @@ const App: React.FC = () => {
 
   const filterDependabot = (pr: PRData) => state.showDependabotPRs || pr.author.login !== 'dependabot';
   const filterMasterPRs = (pr: PRData) => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main');
+  const filterNeedsReviewPRs = (pr: PRData) => !state.showNeedsReviewPRs || pr.reviews.nodes.length === 0;
+
   const displayPRs = React.useMemo(() => {
     if (!state.PRs || state.PRs.length === 0) return null;
-    return state.PRs.filter(filterDependabot).filter(filterMasterPRs).map((pr) => (
+    return state.PRs.filter(filterDependabot).filter(filterMasterPRs).filter(filterNeedsReviewPRs).map((pr) => (
       <PR key={pr.url} pr={pr} showBranch={state.showMasterPRs} />
     ));
-  }, [state.PRs, state.showDependabotPRs, state.showMasterPRs]);
+  }, [state.PRs, state.showDependabotPRs, state.showMasterPRs, state.showNeedsReviewPRs]);
   const handleOnChange = (e: React.ChangeEvent<HTMLInputElement>) => dispatch({ type: 'SET_INTERVAL_INPUT', payload: parseInt(e.target.value) });
   const displayRecentPRs = React.useMemo(() => state.showRecentPRs && state.recentPRs.length > 0 ? state.recentPRs.map((pr) => <PR key={pr.url} pr={pr} isRecent={state.showRecentPRs} />) : null, [state.showRecentPRs, state.recentPRs]);
 
   const ShortcutsOverlay = ({ onClose }: { onClose: () => void }) => (
     <div className="keyboard-shortcuts-overlay" onClick={onClose}>
       <div className="keyboard-shortcuts-content">
-        <h2>Shortcuts</h2>
+        <h2>Keyboard shortcuts</h2>
         <ul>
-          <li><strong>d</strong>: Toggle Dependabot</li>
-          <li><strong>a</strong>: Toggle Recent PRs</li>
-          <li><strong>m</strong>: Toggle Master PRs</li>
-          <li><strong>l</strong>: Toggle Repo Links</li>
+          <li><strong>d</strong>: Dependabot PRs</li>
+          <li><strong>a</strong>: Recent PRs</li>
+          <li><strong>m</strong>: Master PRs</li>
+          <li><strong>n</strong>: Needs Review PRs</li>
+          <li><strong>l</strong>: Repo Links</li>
           <li><strong>r</strong>: Refresh PRs</li>
-          <li><strong>\</strong>: Reset Repos</li>
-          <li><strong>?</strong>: This Overlay</li>
+          <li><strong>\</strong>: Refresh Repos</li>
+          <li><strong>?</strong>: Show Keyboard shortcuts</li>
         </ul>
       </div>
     </div>

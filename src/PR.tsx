@@ -172,7 +172,7 @@ const PR = (props: any) => {
 
   const events = combineReviewsAndComments(reviews, comments);
   const commitState = getCommitState(headRefOid, commits);
-  const reviewState = reviews.nodes.length === 0 && (<FaExclamationCircle className="event-icon unreviewed-icon" title="Unreviewed PR - Needs attention!" />);
+  const reviewState = reviews.nodes.length === 0 && (<FaExclamationCircle className="event-icon unreviewed-icon" title="Unreviewed PR - Needs review" />);
   const prLink = <a href={url} target="_blank" rel="noopener noreferrer">{`${repository.name}#${pr.number}`}</a>;
   const branch = showBranch ? baseRefName : '';
   const eventOutput = events.length > 0 && (
