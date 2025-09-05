@@ -1,14 +1,49 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <link rel="icon" href="/pr.radiator/favicon.ico" />
-    <title>PR Radiator</title>
-    <script type="module" crossorigin src="/pr.radiator/assets/index-REOX_04P.js"></script>
-    <link rel="stylesheet" crossorigin href="/pr.radiator/assets/index-CZ-sXDMS.css">
-  </head>
-  <body>
-    <div id="progress-bar"></div>
-    <div id="root"></div>
-  </body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PR Radiator</title>
+  <link rel="icon" href="/pr.radiator/favicon.ico" />
+  <script type="module" crossorigin src="/pr.radiator/assets/index-C5Mtw8WE.js"></script>
+  <link rel="stylesheet" crossorigin href="/pr.radiator/assets/index-CZ-sXDMS.css">
+</head>
+<body>
+  <div id="progress-bar" ></div>
+  <div id="root"></div>
+  <div id="settings-form" class="settings-form" style="display: none;">
+    <h1>Configure PR Radiator</h1>
+    <form id="config-form" autocomplete="off">
+      <input type="text" id="owner" placeholder="github-organization" autofocus autocomplete="off" value="">
+      <input type="text" id="team" placeholder="github-team-name" autocomplete="off" value="">
+      <input type="password" id="token" placeholder="Github Personal Access Token" autocomplete="new-password" value="">
+      <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" class="info-link" title="Generate a personal access token with read:org and repo scopes">
+        https://github.com/settings/tokens
+      </a>
+      <span> - Generate a personal access token with read:org and repo scopes</span>
+      <div>
+        Github Polling Interval
+        <input type="number" id="polling-interval" value="60" min="5">
+        <span>(seconds)</span>
+      </div>
+      <input type="submit" value="Begin" id="submit">
+    </form>
+  </div>
+  <div class="keyboard-shortcuts-overlay" id="shortcuts-overlay" style="display: none;">
+    <div class="keyboard-shortcuts-content">
+      <h2>Keyboard shortcuts</h2>
+      <ul>
+        <li><strong>d</strong>: Dependabot PRs</li>
+        <li><strong>a</strong>: Recent PRs</li>
+        <li><strong>m</strong>: Master PRs</li>
+        <li><strong>n</strong>: Needs Review PRs</li>
+        <li><strong>l</strong>: Repo Links</li>
+        <li><strong>r</strong>: Refresh PRs</li>
+        <li><strong>\\</strong>: Refresh Repos</li>
+        <li><strong>?</strong>: Show Keyboard shortcuts</li>
+      </ul>
+    </div>
+  </div>
+
+</body>
 </html>

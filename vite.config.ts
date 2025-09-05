@@ -1,6 +1,4 @@
 import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import checker from 'vite-plugin-checker';
 
 export default defineConfig({
   base: '/pr.radiator/',
@@ -11,6 +9,5 @@ export default defineConfig({
   build: {
     target: 'esnext',
     outDir: 'docs'
-  },
-  plugins: [react(), checker({ typescript: true })],
+  }
 })
