@@ -538,6 +538,15 @@ const init = async () => {
     }
   }
 
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && token && owner && repos.length > 0 && !state.isFetchingOpenPRs) {
+      fetchOpenPRs(token, owner, repos, ignoreRepos).catch((error) => {
+        console.error('Error in fetchOpenPRs on tab focus', error);
+      });
+    }
+  });
+
+
   render();
 };
 
