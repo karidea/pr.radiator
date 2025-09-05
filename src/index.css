@@ -65,10 +65,6 @@ a {
   margin: 0% 10% 0% 10%;
 }
 
-.settings-form input[id=polling-interval] {
-  width: auto;
-}
-
 .settings-form input[type=text],
 .settings-form input[type=password] {
   width: 100%;

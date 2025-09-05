@@ -333,12 +333,10 @@ const initialState = {
     owner: localStorage.getItem('PR_RADIATOR_OWNER') || '',
     team: localStorage.getItem('PR_RADIATOR_TEAM') || '',
     repos: JSON.parse(localStorage.getItem('PR_RADIATOR_REPOS') || '[]'),
-    pollingInterval: parseInt(localStorage.getItem('PR_RADIATOR_POLLING_INTERVAL') || '0'),
     ignoreRepos: JSON.parse(localStorage.getItem('PR_RADIATOR_IGNORE_REPOS') || '[]'),
   },
   PRs: [],
   recentPRs: [],
-  intervalInput: 300,
   showDependabotPRs: false,
   showMasterPRs: true,
   showNeedsReviewPRs: false,
@@ -374,13 +372,10 @@ const onSubmit = (event) => {
   const owner = document.getElementById('owner').value;
   const token = document.getElementById('token').value;
   const team = document.getElementById('team').value;
-  const pollingIntervalInput = document.getElementById('polling-interval');
-  const pollingInterval = pollingIntervalInput?.value ? parseInt(pollingIntervalInput.value) * 1000 : 0;
   localStorage.setItem('PR_RADIATOR_OWNER', owner);
   localStorage.setItem('PR_RADIATOR_TOKEN', token);
   localStorage.setItem('PR_RADIATOR_TEAM', team);
-  localStorage.setItem('PR_RADIATOR_POLLING_INTERVAL', pollingInterval.toString());
-  setState({ config: { ...state.config, team, token, owner, pollingInterval } });
+  setState({ config: { ...state.config, team, token, owner } });
 
   if (state.config.token && state.config.owner && state.config.repos.length > 0) {
     fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch((error) => {
@@ -448,33 +443,31 @@ const useInterval = (callback, delay) => {
 };
 
 const init = async () => {
-  const { config: { token, owner, team, repos, pollingInterval, ignoreRepos } } = state;
+  const { config: { token, owner, team, repos, ignoreRepos } } = state;
   if (token && owner && repos.length > 0) {
     await fetchOpenPRs(token, owner, repos, ignoreRepos);
   }
 
+  const fiveMinutes = 300 * 1000;
   useInterval(() => {
     if (token && owner && repos.length > 0) {
       fetchOpenPRs(token, owner, repos, ignoreRepos).catch((error) => {
         console.error('Error in fetchOpenPRs on interval', error);
       });
     }
-  }, pollingInterval);
+  }, fiveMinutes);
 
   const settingsForm = document.getElementById('settings-form');
   if (!settingsForm.hasAttribute('data-initialized')) {
     const ownerInput = document.getElementById('owner');
     const teamInput = document.getElementById('team');
     const tokenInput = document.getElementById('token');
-    const intervalInput = document.getElementById('polling-interval');
 
     ownerInput.value = owner;
     teamInput.value = team;
     tokenInput.value = token;
-    intervalInput.value = state.intervalInput;
 
     document.getElementById('config-form').addEventListener('submit', onSubmit);
-    intervalInput.addEventListener('change', (e) => setState({ intervalInput: parseInt(e.target.value) }));
 
     settingsForm.setAttribute('data-initialized', 'true');  // Prevent duplicate setup
   }
