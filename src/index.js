@@ -338,7 +338,7 @@ const initialState = {
   },
   PRs: [],
   recentPRs: [],
-  intervalInput: 60,
+  intervalInput: 300,
   showDependabotPRs: false,
   showMasterPRs: true,
   showNeedsReviewPRs: false,
