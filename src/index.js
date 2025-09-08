@@ -516,18 +516,27 @@ const init = async () => {
       },
       '\\': () => {
         setState({ config: { ...state.config, repos: [] }, PRs: [], recentPRs: [] });
+        startProgress();
+        render();
         api.queryTeamRepos(state.config.token, state.config.owner, state.config.team)
           .then(repos => api.filterTeamRepos(state.config.token, state.config.owner, state.config.team, repos))
           .then(filteredRepos => {
             localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
             setState({ config: { ...state.config, repos: filteredRepos } });
+            render();
             if (filteredRepos.length > 0) {
-              fetchOpenPRs(state.config.token, owner, filteredRepos, state.config.ignoreRepos).catch(console.error);
+              fetchOpenPRs(state.config.token, state.config.owner, filteredRepos, state.config.ignoreRepos).catch(error => {
+                console.error('Error fetching PRs after repos', error);
+                stopProgress();
+              });
+            } else {
+              stopProgress();
             }
           })
           .catch(error => {
-            console.error('Error in getTeamRepos', error);
+            console.error('Error fetching repos after submit', error);
             stopProgress();
+            render();
           });
       },
       '?': () => {
