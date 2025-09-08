@@ -8,6 +8,7 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
-    outDir: 'docs'
+    outDir: 'docs',
+    modulePreload: { polyfill: false }
   }
 })

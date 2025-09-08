@@ -1,14 +1,6 @@
-/* Self-hosted Google Sans Code - Regular */
-@font-face {
-  font-family: 'Google Sans Code';
-  src: url('/fonts/GoogleSansCode-Regular.ttf') format('truetype');  /* Adjust path if in /src/assets */
-  font-weight: 400;  /* Normal */
-  font-style: normal;
-  font-display: swap;  /* Fallback during load */
-}
 body {
   margin: 5px;
-  font-family: Google Sans Code, monospace;
+  font-family: "SF Mono", "Menlo", "Consolas", "Courier New", monospace;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background-color: #1d1f24;
