@@ -227,8 +227,7 @@ const combineReviewsAndComments = (reviews, comments) => {
     if (
       !currentEvent ||
       curr.author !== currentEvent.author ||
-      curr.state !== currentEvent.state ||
-      curr.createdAt.getTime() - currentEvent.createdAt.getTime() > 1000 * 60 * 5
+      curr.state !== currentEvent.state
     ) {
       if (currentEvent) compressedEvents.push(currentEvent);
       currentEvent = { ...curr, count: 1 };
