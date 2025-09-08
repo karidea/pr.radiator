@@ -1,4 +1,4 @@
-import { addWeeks, addDays, addHours, isAfter, format, formatRFC3339, formatDistanceToNow } from 'date-fns';
+import { format, formatRFC3339, formatDistanceToNow } from 'date-fns';
 
 const sortByCreatedAt = (a, b) => a.createdAt.getTime() - b.createdAt.getTime();
 const byCommittedDateDesc = (a, b) => b.committedDate.getTime() - a.committedDate.getTime();
@@ -241,16 +241,11 @@ const combineReviewsAndComments = (reviews, comments) => {
 };
 
 const getAgeString = (createdAt) => {
-  const current = new Date();
-  if (isAfter(createdAt, addHours(current, -1))) {
-    return 'last-hour';
-  } else if (isAfter(createdAt, addHours(current, -2))) {
-    return 'last-two-hours';
-  } else if (isAfter(createdAt, addDays(current, -1))) {
-    return 'last-day';
-  } else if (isAfter(createdAt, addWeeks(current, -1))) {
-    return 'last-week';
-  }
+  const diffMs = Date.now() - createdAt.getTime();
+  if (diffMs < 3600000) return 'last-hour'; // 1 hour
+  if (diffMs < 7200000) return 'last-two-hours'; // 2 hours
+  if (diffMs < 86400000) return 'last-day'; // 1 day
+  if (diffMs < 604800000) return 'last-week'; // 1 week
   return 'over-week-old';
 };
 
@@ -298,16 +293,10 @@ const renderPR = (pr, isRecent = true, showBranch = false) => {
   const dateKey = isRecent ? 'committedDate' : 'createdAt';
   const date = pr[dateKey];
   const elapsedTimeStr = formatDistanceToNow(date, { addSuffix: true, includeSeconds: true });
-  const elementId = `pr-time-${pr.url}`;
+  const id = `pr-time-${pr.url}`;
 
   if (isRecent) {
-    return `
-      <div>
-        <span id="${elementId}" title="${formatRFC3339(date)}">${elapsedTimeStr}</span> ${pr.author.login}&nbsp;
-        <a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}/pull/${number}</a>&nbsp;
-        ${title}
-      </div>
-    `;
+    return `<div><span id="${id}" title="${formatRFC3339(date)}">${elapsedTimeStr}</span> ${pr.author.login}&nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}/pull/${number}</a>&nbsp;${title}</div>`;
   }
 
   const { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, commits } = pr;
@@ -317,13 +306,9 @@ const renderPR = (pr, isRecent = true, showBranch = false) => {
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
   const branch = showBranch ? baseRefName : '';
   const eventOutput = events.length > 0 ? `<br>&nbsp;&nbsp;${events.map((event, index) => TimelineEvent({ ...event, key: index })).join('')}` : '';
+  const timestamp = `<span id="${id}" title="${formatRFC3339(date)}">${elapsedTimeStr}</span>`;
 
-  return `
-    <div class="${getAgeString(createdAt)}">
-      <span id="${elementId}" title="${formatRFC3339(date)}">${elapsedTimeStr}</span> ${reviewState} ${commitState} ${branch} ${author} ${prLink} ${title}
-      ${eventOutput}
-    </div>
-  `;
+  return `<div class="${getAgeString(createdAt)}">${timestamp} ${reviewState} ${commitState} ${branch} ${author} ${prLink} ${title} ${eventOutput}</div>`;
 };
 
 const initialState = {
