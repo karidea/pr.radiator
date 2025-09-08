@@ -379,6 +379,29 @@ const onSubmit = (event) => {
     fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch((error) => {
       console.error('Error fetching PRs after submit', error);
     });
+  } else if (state.config.token && state.config.owner && state.config.team && state.config.repos.length === 0) {
+    startProgress();
+    render();
+    api.queryTeamRepos(token, owner, team)
+      .then(repos => api.filterTeamRepos(token, owner, team, repos))
+      .then(filteredRepos => {
+        localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
+        setState({ config: { ...state.config, repos: filteredRepos } });
+        render();
+        if (filteredRepos.length > 0) {
+          fetchOpenPRs(token, owner, filteredRepos, state.config.ignoreRepos).catch(error => {
+            console.error('Error fetching PRs after repos', error);
+            stopProgress();
+          });
+        } else {
+          stopProgress();
+        }
+      })
+      .catch(error => {
+        console.error('Error fetching repos after submit', error);
+        stopProgress();
+        render();
+      });
   }
 };
 
@@ -481,25 +504,25 @@ const init = async () => {
       a: () => {
         const newShow = !state.showRecentPRs;
         setState({ showRecentPRs: newShow });
-        if (newShow && token && owner && repos.length > 0) {
-          fetchRecentPRs(token, owner, repos, ignoreRepos).catch(console.error);
+        if (newShow && state.config.token && state.config.owner && state.config.repos.length > 0) {
+          fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
         }
       },
       l: () => setState({ showRepoLinks: !state.showRepoLinks }),
       r: () => {
-        if (token && owner && repos.length > 0) {
-          fetchOpenPRs(token, owner, repos, ignoreRepos).catch(console.error);
+        if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+          fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
         }
       },
       '\\': () => {
         setState({ config: { ...state.config, repos: [] }, PRs: [], recentPRs: [] });
-        api.queryTeamRepos(token, owner, team)
-          .then(repos => api.filterTeamRepos(token, owner, team, repos))
+        api.queryTeamRepos(state.config.token, state.config.owner, state.config.team)
+          .then(repos => api.filterTeamRepos(state.config.token, state.config.owner, state.config.team, repos))
           .then(filteredRepos => {
             localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
             setState({ config: { ...state.config, repos: filteredRepos } });
             if (filteredRepos.length > 0) {
-              fetchOpenPRs(token, owner, filteredRepos, ignoreRepos).catch(console.error);
+              fetchOpenPRs(state.config.token, owner, filteredRepos, state.config.ignoreRepos).catch(console.error);
             }
           })
           .catch(error => {
