@@ -8,9 +8,6 @@
     "build": "vite build",
     "lint": "eslint ."
   },
-  "dependencies": {
-    "date-fns": "^4.1.0"
-  },
   "devDependencies": {
     "vite": "^7.1.5"
   }

@@ -1,5 +1,3 @@
-import { format, formatRFC3339, formatDistanceToNow } from 'date-fns';
-
 const sortByCreatedAt = (a, b) => a.createdAt.getTime() - b.createdAt.getTime();
 const byCommittedDateDesc = (a, b) => b.committedDate.getTime() - a.committedDate.getTime();
 
@@ -270,7 +268,7 @@ const getCommitState = (headRefOid, commits) => {
 const TimelineEvent = ({ count, author, createdAt, state }) => {
   const countBadge = (count ?? 1) > 1 ? `(${count})` : '';
   const authorWithCount = `${author}${countBadge}`;
-  const formattedDate = format(createdAt, 'PPPpp');
+  const formattedDate = createdAt.toLocaleString();
   let tooltip = `${authorWithCount} ${state.toLowerCase()} at ${formattedDate}`;
 
   if (state === 'APPROVED') {
@@ -288,6 +286,22 @@ const TimelineEvent = ({ count, author, createdAt, state }) => {
   return '';
 };
 
+const formatDistanceToNow = (date) => {
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0 || isNaN(diffMs)) return 'Invalid Date';
+  const minutes = Math.round(diffMs / 6e4);
+  const days = Math.round(diffMs / 864e5);
+  const months = Math.round(days / 30);
+  const years = Math.round(days / 360);
+  if (minutes < 1) return 'less than a minute ago';
+  if (minutes < 45) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  if (minutes < 90) return 'about 1 hour ago';
+  if (days < 1) return `about ${Math.floor(minutes / 60)} hour${Math.floor(minutes / 60) === 1 ? '' : 's'} ago`;
+  if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`;
+  if (months < 12) return `about ${months} month${months === 1 ? '' : 's'} ago`;
+  return `about ${years} year${years === 1 ? '' : 's'} ago`;
+};
+
 const renderPR = (pr, isRecent = true, showBranch = false) => {
   const { number, title, url, repository } = pr;
   const dateKey = isRecent ? 'committedDate' : 'createdAt';
@@ -296,7 +310,7 @@ const renderPR = (pr, isRecent = true, showBranch = false) => {
   const id = `pr-time-${pr.url}`;
 
   if (isRecent) {
-    return `<div><span id="${id}" title="${formatRFC3339(date)}">${elapsedTimeStr}</span> ${pr.author.login}&nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}/pull/${number}</a>&nbsp;${title}</div>`;
+    return `<div><span id="${id}" title="${date}">${elapsedTimeStr}</span> ${pr.author.login}&nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}/pull/${number}</a>&nbsp;${title}</div>`;
   }
 
   const { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, commits } = pr;
@@ -306,7 +320,7 @@ const renderPR = (pr, isRecent = true, showBranch = false) => {
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
   const branch = showBranch ? baseRefName : '';
   const eventOutput = events.length > 0 ? `<br>&nbsp;&nbsp;${events.map((event, index) => TimelineEvent({ ...event, key: index })).join('')}` : '';
-  const timestamp = `<span id="${id}" title="${formatRFC3339(date)}">${elapsedTimeStr}</span>`;
+  const timestamp = `<span id="${id}" title="${date}">${elapsedTimeStr}</span>`;
 
   return `<div class="${getAgeString(createdAt)}">${timestamp} ${reviewState} ${commitState} ${branch} ${author} ${prLink} ${title} ${eventOutput}</div>`;
 };
