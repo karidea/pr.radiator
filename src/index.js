@@ -8,7 +8,7 @@ const RepositoriesQuery = (owner, team, next) => {
 };
 
 const innerRecentPRsQuery = `ref(qualifiedName:"master") {target {... on Commit {history(first: 25, since: "%s") {nodes {committedDate messageHeadline parents {totalCount} associatedPullRequests(first:5) {nodes { createdAt number title url author { login } repository { name } }}}}}}}`;
-const innerOpenPRsQuery = `pullRequests(last: 15, states: OPEN) { nodes {title url createdAt baseRefName headRefOid isDraft number author { login } comments (first: 50) {nodes {createdAt author { login }}} reviews(first: 50) {nodes {state createdAt author { login }}} commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}}}}}`;
+const innerOpenPRsQuery = `pullRequests(last: 15, states: OPEN) { nodes {title url createdAt baseRefName headRefOid isDraft number author { login } comments (first: 50) {nodes {createdAt author { login }}} reviews(first: 50) {nodes {state createdAt author { login }}} commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}}} reviewDecision }}`;
 
 const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
   const innerQuery = type === 'recent' ? innerRecentPRsQuery.replace('%s', sinceDateTime) : innerOpenPRsQuery;
@@ -408,7 +408,7 @@ const onSubmit = (event) => {
 const filters = {
   dependabot: (pr) => state.showDependabotPRs || pr.author.login !== 'dependabot',
   masterPRs: (pr) => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main'),
-  needsReview: (pr) => !state.showNeedsReviewPRs || pr.reviews.nodes.length === 0,
+  needsReview: (pr) => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null),
 };
 
 const render = () => {
