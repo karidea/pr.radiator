@@ -340,6 +340,8 @@ const initialState = {
   showNeedsReviewPRs: false,
   showRecentPRs: false,
   showRepoLinks: false,
+  ignoreMode: false,
+  selectedRepoIndex: -1,
   isFetchingOpenPRs: false,
 };
 
@@ -363,6 +365,19 @@ const stopProgress = () => {
 const setState = (updates) => {
   state = { ...state, ...updates };
   render();
+};
+
+const isRepoIgnored = (repoName) => state.config.ignoreRepos.includes(repoName);
+
+const toggleIgnoreForRepo = (repoName) => {
+  const ignoreRepos = [...state.config.ignoreRepos];
+  const index = ignoreRepos.indexOf(repoName);
+  if (index > -1) {
+    ignoreRepos.splice(index, 1);
+  } else {
+    ignoreRepos.push(repoName);
+  }
+  setState({ config: { ...state.config, ignoreRepos } });
 };
 
 const onSubmit = (event) => {
@@ -412,7 +427,7 @@ const filters = {
 };
 
 const render = () => {
-  const { config: { token, owner, team, repos }} = state;
+  const { config: { token, owner, team, repos, ignoreRepos }, ignoreMode, selectedRepoIndex, showRepoLinks } = state;
   document.title = 'PR Radiator';
   const root = document.getElementById('root');
   const settingsForm = document.getElementById('settings-form');
@@ -430,22 +445,86 @@ const render = () => {
     return;
   }
 
-  const displayPRs = state.PRs.filter(filters.dependabot).filter(filters.masterPRs).filter(filters.needsReview);
-
   let content = '';
-  if (state.showRepoLinks) {
-   const baseUrl = `https://github.com/${owner}/`;
-   content = `<h1>${team} repositories (${repos.length})</h1><ul>${repos.map(repo => `<li><a href="${baseUrl}${repo}" target="_blank" rel="noopener">${repo}</a></li>`).join('')}</ul>`;
-  } else if (state.showRecentPRs) {
+
+  // Combined Repo View (toggled by 'l')
+  if (showRepoLinks) {
+    const baseUrl = `https://github.com/${owner}/`;
+
+    if (repos.length === 0) {
+      content = '<div>No repositories available.</div>';
+    } else {
+      // NEW: Dynamic rendering based on ignoreMode (within repo view)
+      if (ignoreMode) {
+        // Interactive ignore mode (no JS tag; CSS handles ::after)
+        const repoItems = repos.map((repo, index) => {
+          const isIgnored = isRepoIgnored(repo);
+          const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
+          return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${repo}</li>`; // FIX: Removed ${tag} to avoid duplication
+        }).join('');
+        content = `
+          <h1>${team} repositories (${repos.length}) - Edit Ignores (press i to exit)</h1> <!-- UPDATED: Consistent title -->
+          <ul id="ignore-list" class="repo-list ignore-mode" tabindex="-1">
+            ${repoItems}
+          </ul>
+          <p>Navigate: j/k or arrows | Toggle: Enter/space or click</p>
+        `;
+      } else {
+        // Static links mode (consistent formatting with ignore mode; shows subtle ignored status)
+        const repoItems = repos.map((repo) => {
+          const isIgnored = isRepoIgnored(repo);
+          return `<li class="repo-item ${isIgnored ? 'ignored' : ''}"><a href="${baseUrl}${repo}" target="_blank" rel="noopener">${repo}</a></li>`;
+        }).join('');
+        content = `
+          <h1>${team} repositories (${repos.length}) (i to edit ignores)</h1> <!-- UPDATED: Subtle hint -->
+          <ul id="repo-links" class="repo-list static-mode">
+            ${repoItems}
+          </ul>
+        `;
+      }
+    }
+    root.innerHTML = `<div class="App">${content}</div>`;
+
+    // Attach mouse handlers if in ignore mode (click to toggle)
+    if (ignoreMode) {
+      const ignoreList = document.getElementById('ignore-list');
+      if (ignoreList) ignoreList.focus(); // For keyboard accessibility
+
+      // Add click listeners to each repo item
+      const repoItems = ignoreList.querySelectorAll('.repo-item');
+      repoItems.forEach(item => {
+        item.addEventListener('click', (e) => {
+          const repo = e.currentTarget.dataset.repo;
+          // Add toggled class immediately for feedback
+          const el = e.currentTarget;
+          el.classList.add('toggled');
+          setTimeout(() => {
+            // Check if element still exists in DOM before removing class (prevents error on re-render)
+            if (el && el.parentNode) {
+              el.classList.remove('toggled');
+            }
+          }, 200);
+          toggleIgnoreForRepo(repo);
+        });
+      });
+    }
+    return;
+  }
+
+  // Other views unchanged (recent PRs, open PRs, etc.)
+  if (state.showRecentPRs) {
     content = state.recentPRs.map(pr => renderPR(pr)).join('');
   } else if (state.isFetchingOpenPRs && state.PRs.length === 0) {
     content = `Fetching ${team} pull requests...`;
-  } else if (displayPRs.length === 0) {
-    document.title = `(${displayPRs.length}) PR Radiator`;
-    content = 'No PRs found';
   } else {
-    document.title = `(${displayPRs.length}) PR Radiator`;
-    content = displayPRs.map(pr => renderPR(pr, false, state.showMasterPRs)).join('');
+    const displayPRs = state.PRs.filter(filters.dependabot).filter(filters.masterPRs).filter(filters.needsReview);
+    if (displayPRs.length === 0) {
+      document.title = `(${displayPRs.length}) PR Radiator`;
+      content = 'No PRs found';
+    } else {
+      document.title = `(${displayPRs.length}) PR Radiator`;
+      content = displayPRs.map(pr => renderPR(pr, false, state.showMasterPRs)).join('');
+    }
   }
 
   root.innerHTML = `<div class="App">${content}</div>`;
@@ -494,65 +573,141 @@ const init = async () => {
   }
 
   document.addEventListener('keydown', (event) => {
-    const settingsForm = document.getElementById('settings-form');
-    if (settingsForm.style.display === 'block' || document.activeElement.tagName === 'INPUT') return;
+  const settingsForm = document.getElementById('settings-form');
+  if (settingsForm.style.display === 'block' || document.activeElement.tagName === 'INPUT') return;
 
-    const handlers = {
+  const { showRepoLinks, ignoreMode } = state;
+
+  // Ignore mode handlers (only active when in repo view and ignoreMode)
+  if (showRepoLinks && ignoreMode) {
+      let handled = true;
+      switch (event.key) {
+      case 'j':
+      case 'ArrowDown':
+          if (state.config.repos.length > 0) {
+          const newIndex = Math.min(state.config.repos.length - 1, state.selectedRepoIndex + 1);
+          setState({ selectedRepoIndex: newIndex });
+          }
+          break;
+      case 'k':
+      case 'ArrowUp':
+          if (state.config.repos.length > 0) {
+          const newIndex = Math.max(0, state.selectedRepoIndex - 1);
+          setState({ selectedRepoIndex: newIndex });
+          }
+          break;
+      case 'Enter':
+      case ' ':
+          event.preventDefault(); // Prevent space from scrolling
+          if (state.config.repos.length > 0 && state.selectedRepoIndex >= 0) {
+          const repo = state.config.repos[state.selectedRepoIndex];
+          toggleIgnoreForRepo(repo);
+          }
+          break;
+      default:
+          handled = false;
+      }
+      if (handled) return;
+  }
+
+  // FIX: Existing handlers (skip if in repo view and ignoreMode, except for 'i' and 'l' to allow toggle-off and full exit)
+  if (showRepoLinks && ignoreMode && event.key !== 'i' && event.key !== 'l') return;
+
+  const handlers = {
       d: () => setState({ showDependabotPRs: !state.showDependabotPRs }),
       m: () => setState({ showMasterPRs: !state.showMasterPRs }),
       n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs }),
       a: () => {
-        const newShow = !state.showRecentPRs;
-        setState({ showRecentPRs: newShow });
-        if (newShow && state.config.token && state.config.owner && state.config.repos.length > 0) {
+      const newShow = !state.showRecentPRs;
+      setState({ showRecentPRs: newShow });
+      if (newShow && state.config.token && state.config.owner && state.config.repos.length > 0) {
           fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
+      }
+      },
+      l: () => {
+        // UPDATED: Toggle repo view (combined static/interactive); in ignore mode, full exit to PRs
+        const newShow = !showRepoLinks;
+        if (newShow) {
+          // Entering repo view: Always start in static mode
+          setState({
+            showRepoLinks: newShow,
+            ignoreMode: false,
+            selectedRepoIndex: 0,
+            showRecentPRs: false, // Exit recent view if entering
+          });
+        } else {
+          // Exiting repo view: Save ignores and refresh PRs
+          localStorage.setItem('PR_RADIATOR_IGNORE_REPOS', JSON.stringify(state.config.ignoreRepos));
+          if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+            fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
+          }
+          setState({
+            showRepoLinks: newShow,
+            ignoreMode: false, // Ensure cleanup
+            selectedRepoIndex: -1,
+          });
         }
       },
-      l: () => setState({ showRepoLinks: !state.showRepoLinks }),
-      r: () => {
-        if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+      i: () => {
+      // Toggle ignore mode ONLY if in repo view; otherwise ignore
+      if (!showRepoLinks) return; // Contextual: Only works in repo view
+      const newMode = !ignoreMode;
+      if (!newMode) {
+          // Exiting: Save and refresh PRs (like other toggles)
+          localStorage.setItem('PR_RADIATOR_IGNORE_REPOS', JSON.stringify(state.config.ignoreRepos));
+          if (state.config.token && state.config.owner && state.config.repos.length > 0) {
           fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-        }
+          }
+      }
+      setState({
+          ignoreMode: newMode,
+          selectedRepoIndex: newMode ? 0 : -1,
+      });
+      },
+      r: () => {
+      if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+          fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
+      }
       },
       '\\': () => {
-        setState({ config: { ...state.config, repos: [] }, PRs: [], recentPRs: [] });
-        startProgress();
-        render();
-        api.queryTeamRepos(state.config.token, state.config.owner, state.config.team)
+      setState({ config: { ...state.config, repos: [] }, PRs: [], recentPRs: [] });
+      startProgress();
+      render();
+      api.queryTeamRepos(state.config.token, state.config.owner, state.config.team)
           .then(repos => api.filterTeamRepos(state.config.token, state.config.owner, state.config.team, repos))
           .then(filteredRepos => {
-            localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
-            setState({ config: { ...state.config, repos: filteredRepos } });
-            render();
-            if (filteredRepos.length > 0) {
+          localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
+          setState({ config: { ...state.config, repos: filteredRepos } });
+          render();
+          if (filteredRepos.length > 0) {
               fetchOpenPRs(state.config.token, state.config.owner, filteredRepos, state.config.ignoreRepos).catch(error => {
-                console.error('Error fetching PRs after repos', error);
-                stopProgress();
-              });
-            } else {
+              console.error('Error fetching PRs after repos', error);
               stopProgress();
-            }
+              });
+          } else {
+              stopProgress();
+          }
           })
           .catch(error => {
-            console.error('Error fetching repos after submit', error);
-            stopProgress();
-            render();
+          console.error('Error fetching repos after submit', error);
+          stopProgress();
+          render();
           });
       },
       '?': () => {
-        const overlay = document.getElementById('shortcuts-overlay');
-        overlay.style.display = overlay.style.display === 'none' ? 'block' : 'none';
+      const overlay = document.getElementById('shortcuts-overlay');
+      overlay.style.display = overlay.style.display === 'none' ? 'block' : 'none';
       }
-    };
+  };
 
-    if (handlers[event.key]) handlers[event.key]();
+  if (handlers[event.key]) handlers[event.key]();
   });
 
   if (token && owner && team && repos.length === 0) {
     try {
       startProgress();
-      const repos = await api.queryTeamRepos(token, owner, team);
-      const filteredRepos = await api.filterTeamRepos(token, owner, team, repos);
+      const reposList = await api.queryTeamRepos(token, owner, team);
+      const filteredRepos = await api.filterTeamRepos(token, owner, team, reposList);
       localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
       setState({ config: { ...state.config, repos: filteredRepos } });
     } catch (error) {
@@ -568,7 +723,6 @@ const init = async () => {
       });
     }
   });
-
 
   render();
 };

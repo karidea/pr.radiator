@@ -48,6 +48,7 @@ span.failure, span.changes-requested {
 a {
   color: #49a29f;
   font-weight: 550;
+  text-decoration: none; /* UPDATED: Ensure no underline in lists */
 }
 
 .settings-form {
@@ -215,4 +216,109 @@ a {
     animation: none;
     background: #49a29f; /* Muted teal for static visibility, matches links */
   }
+}
+
+/* Base styles for Repo Lists (shared between static and ignore modes) */
+.repo-list {
+  outline: none; /* No focus border, but accessible */
+  margin: 0;
+  padding: 0;
+  list-style: none; /* Ensure no bullets */
+}
+
+.repo-list > li {
+  margin-bottom: 2px; /* Small vertical gap between items (consistent compactness) */
+}
+
+.repo-item {
+  padding: 4px 8px; /* Uniform padding for boxed feel (matches ignore mode) */
+  border-radius: 4px;
+  transition: background-color 0.1s ease, transform 0.1s ease; /* Smooth hover/selection */
+  user-select: none; /* Prevent text selection */
+  line-height: 1.3; /* Tight, consistent text height */
+  margin: 0; /* Reset inherited margins */
+  box-sizing: border-box; /* Padding included in height calculation */
+  background-color: #1d1f24; /* Match body color (subtle box only on hover/selection) */
+  min-height: 22px; /* Lock row height to match ignore mode exactly */
+  display: flex; /* Flex for uniform alignment of text/link content */
+  align-items: center; /* Vertical center for consistency */
+  color: #49a29f; /* Bluish-greenish color matching PR links (applies to static mode) */
+}
+
+.repo-item:hover {
+  background-color: #2a2e34; /* Subtle hover highlight (shared) */
+}
+
+/* Static Mode (list view): Full clickable links, subtle ignored indication (no strikethrough) */
+.static-mode .repo-item {
+  cursor: auto; /* Default cursor */
+}
+
+.static-mode .repo-item a {
+  display: block; /* Full row clickable */
+  width: 100%; /* Fill li */
+  color: inherit; /* Let .repo-item teal apply (link-like) */
+  text-decoration: none; /* No underline */
+  position: relative; /* For ::after inside link */
+  line-height: 1.3; /* Explicit tight line-height */
+  margin: 0; /* Zero margins */
+  padding: 0; /* No extra padding (li handles it) */
+  flex: 1; /* Fill flex space for alignment */
+}
+
+.static-mode .repo-item.ignored {
+  opacity: 0.8; /* Subtle dim (mutes teal to softer blue-green) */
+  text-decoration: none; /* No strikethrough */
+}
+
+.static-mode .repo-item.ignored a::after {
+  content: " [IGNORED]";
+  color: inherit; /* Inherit dimmed teal for tag consistency */
+  font-weight: normal;
+  text-decoration: none;
+  display: inline;
+  white-space: nowrap;
+  margin-left: 4px;
+  line-height: 1.3; /* Match row height */
+}
+
+.static-mode .repo-item.selected {
+  background-color: transparent; /* No selection in static */
+}
+
+/* Ignore Mode: Interactive, with strikethrough/red tag */
+.ignore-mode .repo-item {
+  cursor: pointer; /* Pointer for clicks */
+  display: flex; /* Match static flex for alignment */
+  align-items: center; /* Vertical center */
+  color: #ccc; /* FIX: Neutral light gray (body text feel, non-link-like; overrides teal) */
+}
+
+.ignore-mode .repo-item.toggled {
+  background-color: #22863a !important; /* Green flash */
+  transform: scale(1.02);
+  color: #fff; /* White text on green flash for visibility */
+}
+
+.ignore-mode .repo-item.selected {
+  background-color: #3a3e44; /* Selection highlight */
+}
+
+.ignore-mode .repo-item.ignored {
+  text-decoration: line-through; /* Strikethrough in ignore mode */
+  opacity: 0.6; /* Dims gray to softer neutral */
+}
+
+.ignore-mode .repo-item.ignored::after {
+  content: " [IGNORED]";
+  color: #ff6b6b; /* Red tag (overrides dimmed gray) */
+  font-weight: bold;
+  text-decoration: none;
+  margin-left: 4px;
+  line-height: 1.3; /* Match row height */
+}
+
+/* Focus/accessibility for both modes */
+.repo-list:focus .repo-item.selected {
+  box-shadow: 0 0 0 2px #49a29f; /* Teal focus ring */
 }
