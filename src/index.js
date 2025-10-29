@@ -1,6 +1,7 @@
 const sortByCreatedAt = (a, b) => a.createdAt.getTime() - b.createdAt.getTime();
 const byCommittedDateDesc = (a, b) => b.committedDate.getTime() - a.committedDate.getTime();
 
+const progressBar = document.getElementById('progress-bar');
 const repoView = document.getElementById('repo-view');
 const repoTitle = document.getElementById('repo-title');
 const repoList = document.getElementById('repo-list');
@@ -8,6 +9,12 @@ const repoNavHint = document.getElementById('repo-nav-hint');
 const prView = document.getElementById('pr-view');
 const openPrView = document.getElementById('open-pr-view');
 const recentPrView = document.getElementById('recent-pr-view');
+const settingsForm = document.getElementById('settings-form');
+const shortcutsOverlay = document.getElementById('shortcuts-overlay');
+const ownerInput = document.getElementById('owner');
+const teamInput = document.getElementById('team');
+const tokenInput = document.getElementById('token');
+const configForm = document.getElementById('config-form');
 
 const RepositoriesQuery = (owner, team, next) => {
   const after = next ? `"${next}"`: 'null';
@@ -349,7 +356,6 @@ const initialState = {
 
 let state = { ...initialState };
 
-const progressBar = document.getElementById('progress-bar');
 
 const startProgress = () => {
   if (progressBar) progressBar.classList.add('active');
@@ -384,9 +390,9 @@ const toggleIgnoreForRepo = (repoName) => {
 
 const onSubmit = (event) => {
   event.preventDefault();
-  const owner = document.getElementById('owner').value;
-  const token = document.getElementById('token').value;
-  const team = document.getElementById('team').value;
+  const owner = ownerInput.value;
+  const token = tokenInput.value;
+  const team = teamInput.value;
   localStorage.setItem('PR_RADIATOR_OWNER', owner);
   localStorage.setItem('PR_RADIATOR_TOKEN', token);
   localStorage.setItem('PR_RADIATOR_TEAM', team);
@@ -426,7 +432,6 @@ const render = () => {
   const { config: { token, owner, team, repos }, ignoreMode, selectedRepoIndex, showRepoLinks } = state;
   document.title = 'PR Radiator';
 
-  const settingsForm = document.getElementById('settings-form');
   if (!token || !owner || !team) {
     settingsForm.style.display = 'block';
     repoView.classList.add('hidden');
@@ -437,9 +442,8 @@ const render = () => {
 
   if (repos.length === 0) {
     repoView.classList.add('hidden');
-    prView.classList.add('hidden');
-    prView.innerHTML = `<div>Fetching ${team} team repositories...</div>`;
-    prView.classList.remove('hidden'); // Show loading in PR view
+    openPrView.innerHTML = `<div>Fetching ${team} team repositories...</div>`;
+    openPrView.classList.remove('hidden'); // Show loading in PR view
     return;
   }
 
@@ -534,32 +538,24 @@ const init = async () => {
     await fetchOpenPRs(token, owner, repos, ignoreRepos);
   }
 
-  const fiveMinutes = 300 * 1000;
   useInterval(() => {
     if (token && owner && repos.length > 0) {
       fetchOpenPRs(token, owner, repos, ignoreRepos).catch((error) => {
         console.error('Error in fetchOpenPRs on interval', error);
       });
     }
-  }, fiveMinutes);
+  }, 300000); // five minutes
 
-  const settingsForm = document.getElementById('settings-form');
   if (!settingsForm.hasAttribute('data-initialized')) {
-    const ownerInput = document.getElementById('owner');
-    const teamInput = document.getElementById('team');
-    const tokenInput = document.getElementById('token');
-
     ownerInput.value = owner;
     teamInput.value = team;
     tokenInput.value = token;
 
-    document.getElementById('config-form').addEventListener('submit', onSubmit);
-
+    configForm.addEventListener('submit', onSubmit);
     settingsForm.setAttribute('data-initialized', 'true');  // Prevent duplicate setup
   }
 
   document.addEventListener('keydown', (event) => {
-  const settingsForm = document.getElementById('settings-form');
   if (settingsForm.style.display === 'block' || document.activeElement.tagName === 'INPUT') return;
 
   const { showRepoLinks, ignoreMode } = state;
@@ -658,13 +654,11 @@ const init = async () => {
       '\\': () => {
       setState({ config: { ...state.config, repos: [] }, PRs: [], recentPRs: [] });
       startProgress();
-      render();
       api.queryTeamRepos(state.config.token, state.config.owner, state.config.team)
           .then(repos => api.filterTeamRepos(state.config.token, state.config.owner, state.config.team, repos))
           .then(filteredRepos => {
           localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
           setState({ config: { ...state.config, repos: filteredRepos } });
-          render();
           if (filteredRepos.length > 0) {
               fetchOpenPRs(state.config.token, state.config.owner, filteredRepos, state.config.ignoreRepos).catch(error => {
               console.error('Error fetching PRs after repos', error);
@@ -677,12 +671,10 @@ const init = async () => {
           .catch(error => {
           console.error('Error fetching repos after submit', error);
           stopProgress();
-          render();
           });
       },
       '?': () => {
-      const overlay = document.getElementById('shortcuts-overlay');
-      overlay.style.display = overlay.style.display === 'none' ? 'block' : 'none';
+      shortcutsOverlay.style.display = shortcutsOverlay.style.display === 'none' ? 'block' : 'none';
       }
   };
 
