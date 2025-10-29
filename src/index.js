@@ -610,8 +610,8 @@ const init = async () => {
       if (handled) return;
   }
 
-  // FIX: Existing handlers (skip if in repo view and ignoreMode, except for 'i' and 'l' to allow toggle-off and full exit)
-  if (showRepoLinks && ignoreMode && event.key !== 'i' && event.key !== 'l') return;
+// Existing handlers (skip if in repo view and ignoreMode, except for 'i', 'l', and '?' to allow toggle-off, full exit, and shortcuts)
+  if (showRepoLinks && ignoreMode && event.key !== 'i' && event.key !== 'l' && event.key !== '?') return;
 
   const handlers = {
       d: () => setState({ showDependabotPRs: !state.showDependabotPRs }),

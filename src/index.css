@@ -103,7 +103,8 @@ a {
 .keyboard-shortcuts-overlay {
   position: fixed;
   bottom: 20px;
-  left: 20px;
+  right: 20px; /* UPDATED: Move to right side to avoid overlapping left content */
+  left: auto; /* UPDATED: Override left positioning */
   background-color: #2c2f33; /* Dark grey background for dark mode */
   border: 1px solid #3a3e44; /* Slightly darker border */
   border-radius: 8px;
