@@ -8,19 +8,26 @@
   <link rel="icon" href="/favicon.ico" />
 </head>
 <body>
-  <div id="progress-bar" ></div>
-  <div id="root"></div>
+  <div id="progress-bar"></div>
+  <div id="repo-view" class="view hidden">
+    <h1 id="repo-title"></h1>
+    <ul id="repo-list" class="repo-list ignore-mode static-mode" tabindex="-1">
+    </ul>
+    <p id="repo-nav-hint"></p>
+  </div>
+  <div id="pr-view" class="view">
+    <div id="open-pr-view" class="view"></div>
+    <div id="recent-pr-view" class="view hidden"></div>
+  </div>
   <div id="settings-form" class="settings-form" style="display: none;">
-    <h1>Configure PR Radiator</h1>
-    <form id="config-form" autocomplete="off">
-      <input type="text" id="owner" placeholder="github-organization" autofocus autocomplete="off" value="">
-      <input type="text" id="team" placeholder="github-team-name" autocomplete="off" value="">
-      <input type="password" id="token" placeholder="Github Personal Access Token" autocomplete="new-password" value="">
-      <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" class="info-link" title="Generate a personal access token with read:org and repo scopes">
-        https://github.com/settings/tokens
-      </a>
-      <span> - Generate a personal access token with read:org and repo scopes</span>
-      <input type="submit" value="Begin" id="submit">
+    <form id="config-form">
+      <label for="owner">GitHub Organization:</label>
+      <input type="text" id="owner" name="owner" required>
+      <label for="team">Team Slug:</label>
+      <input type="text" id="team" name="team" required>
+      <label for="token">Personal Access Token:</label>
+      <input type="password" id="token" name="token" required>
+      <input type="submit" value="Save Settings">
     </form>
   </div>
   <div class="keyboard-shortcuts-overlay" id="shortcuts-overlay" style="display: none;">

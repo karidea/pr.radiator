@@ -1,6 +1,14 @@
 const sortByCreatedAt = (a, b) => a.createdAt.getTime() - b.createdAt.getTime();
 const byCommittedDateDesc = (a, b) => b.committedDate.getTime() - a.committedDate.getTime();
 
+const repoView = document.getElementById('repo-view');
+const repoTitle = document.getElementById('repo-title');
+const repoList = document.getElementById('repo-list');
+const repoNavHint = document.getElementById('repo-nav-hint');
+const prView = document.getElementById('pr-view');
+const openPrView = document.getElementById('open-pr-view');
+const recentPrView = document.getElementById('recent-pr-view');
+
 const RepositoriesQuery = (owner, team, next) => {
   const after = next ? `"${next}"`: 'null';
 
@@ -17,16 +25,10 @@ const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
   return `query ${type}PRs { ${batchedRepos} }`;
 };
 
-const chunks = (array, chunk_size) =>
-  Array.from({ length: Math.ceil(array.length / chunk_size) }, (_, index) =>
-    array.slice(index * chunk_size, (index + 1) * chunk_size)
-  );
-
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
 const api = {
   fetchBatchQueries: async (token, type, owner, repos, sinceDateTime) => {
-    const result = chunks(repos, 4);
+    const result = Array.from({ length: Math.ceil(repos.length / 4) },
+        (_, index) => repos.slice(index * 4, (index + 1) * 4) );
 
     return Promise.all(result.map(async (reposChunk) => {
       const response = await fetch('https://api.github.com/graphql', {
@@ -66,7 +68,7 @@ const api = {
       hasNextPage = repositories.pageInfo.hasNextPage;
       next = repositories.pageInfo.endCursor;
 
-      await sleep(1000);
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
     return repoNames;
@@ -420,114 +422,98 @@ const onSubmit = (event) => {
   }
 };
 
-const filters = {
-  dependabot: (pr) => state.showDependabotPRs || pr.author.login !== 'dependabot',
-  masterPRs: (pr) => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main'),
-  needsReview: (pr) => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null),
-};
-
 const render = () => {
-  const { config: { token, owner, team, repos, ignoreRepos }, ignoreMode, selectedRepoIndex, showRepoLinks } = state;
+  const { config: { token, owner, team, repos }, ignoreMode, selectedRepoIndex, showRepoLinks } = state;
   document.title = 'PR Radiator';
-  const root = document.getElementById('root');
-  const settingsForm = document.getElementById('settings-form');
 
+  const settingsForm = document.getElementById('settings-form');
   if (!token || !owner || !team) {
     settingsForm.style.display = 'block';
-    root.innerHTML = '';
+    repoView.classList.add('hidden');
+    prView.classList.add('hidden');
     return;
   }
-
   settingsForm.style.display = 'none';
 
   if (repos.length === 0) {
-    root.innerHTML = `<div>Fetching ${team} team repositories...</div>`;
+    repoView.classList.add('hidden');
+    prView.classList.add('hidden');
+    prView.innerHTML = `<div>Fetching ${team} team repositories...</div>`;
+    prView.classList.remove('hidden'); // Show loading in PR view
     return;
   }
 
-  let content = '';
-
-  // Combined Repo View (toggled by 'l')
   if (showRepoLinks) {
-    const baseUrl = `https://github.com/${owner}/`;
-
-    if (repos.length === 0) {
-      content = '<div>No repositories available.</div>';
-    } else {
-      // NEW: Dynamic rendering based on ignoreMode (within repo view)
-      if (ignoreMode) {
-        // Interactive ignore mode (no JS tag; CSS handles ::after)
-        const repoItems = repos.map((repo, index) => {
-          const isIgnored = isRepoIgnored(repo);
-          const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
-          return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${repo}</li>`; // FIX: Removed ${tag} to avoid duplication
-        }).join('');
-        content = `
-          <h1>${team} repositories (${repos.length}) - Edit Ignores (press i to exit)</h1> <!-- UPDATED: Consistent title -->
-          <ul id="ignore-list" class="repo-list ignore-mode" tabindex="-1">
-            ${repoItems}
-          </ul>
-          <p>Navigate: j/k or arrows | Toggle: Enter/space or click</p>
-        `;
-      } else {
-        // Static links mode (consistent formatting with ignore mode; shows subtle ignored status)
-        const repoItems = repos.map((repo) => {
-          const isIgnored = isRepoIgnored(repo);
-          return `<li class="repo-item ${isIgnored ? 'ignored' : ''}"><a href="${baseUrl}${repo}" target="_blank" rel="noopener">${repo}</a></li>`;
-        }).join('');
-        content = `
-          <h1>${team} repositories (${repos.length}) (i to edit ignores)</h1> <!-- UPDATED: Subtle hint -->
-          <ul id="repo-links" class="repo-list static-mode">
-            ${repoItems}
-          </ul>
-        `;
-      }
-    }
-    root.innerHTML = `<div class="App">${content}</div>`;
-
-    // Attach mouse handlers if in ignore mode (click to toggle)
+    repoView.classList.remove('hidden');
+    prView.classList.add('hidden');
+    let titleText, listHtml, navHint;
     if (ignoreMode) {
-      const ignoreList = document.getElementById('ignore-list');
-      if (ignoreList) ignoreList.focus(); // For keyboard accessibility
-
-      // Add click listeners to each repo item
-      const repoItems = ignoreList.querySelectorAll('.repo-item');
-      repoItems.forEach(item => {
-        item.addEventListener('click', (e) => {
-          const repo = e.currentTarget.dataset.repo;
-          // Add toggled class immediately for feedback
-          const el = e.currentTarget;
-          el.classList.add('toggled');
-          setTimeout(() => {
-            // Check if element still exists in DOM before removing class (prevents error on re-render)
-            if (el && el.parentNode) {
-              el.classList.remove('toggled');
-            }
-          }, 200);
-          toggleIgnoreForRepo(repo);
-        });
-      });
-    }
-    return;
-  }
-
-  // Other views unchanged (recent PRs, open PRs, etc.)
-  if (state.showRecentPRs) {
-    content = state.recentPRs.map(pr => renderPR(pr)).join('');
-  } else if (state.isFetchingOpenPRs && state.PRs.length === 0) {
-    content = `Fetching ${team} pull requests...`;
-  } else {
-    const displayPRs = state.PRs.filter(filters.dependabot).filter(filters.masterPRs).filter(filters.needsReview);
-    if (displayPRs.length === 0) {
-      document.title = `(${displayPRs.length}) PR Radiator`;
-      content = 'No PRs found';
+      titleText = `${team} repositories (${repos.length}) - Edit Ignores (press i to exit)`;
+      listHtml = repos.map((repo, index) => {
+        const isIgnored = isRepoIgnored(repo);
+        const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
+        return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${repo}</li>`;
+      }).join('');
+      navHint = '<p>Navigate: j/k or arrows | Toggle: Enter/space or click</p>';
     } else {
+      titleText = `${team} repositories (${repos.length}) (i to edit ignores)`;
+      listHtml = repos.map((repo) => {
+        const isIgnored = isRepoIgnored(repo);
+        return `<li class="repo-item ${isIgnored ? 'ignored' : ''}"><a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener">${repo}</a></li>`;
+      }).join('');
+      navHint = ''; // Empty for static mode
+    }
+    repoTitle.innerHTML = titleText;
+    repoList.innerHTML = listHtml;
+    repoNavHint.innerHTML = navHint;
+    repoList.classList.toggle('ignore-mode', ignoreMode);
+    repoList.classList.toggle('static-mode', !ignoreMode);
+  } else {
+    repoView.classList.add('hidden');
+    prView.classList.remove('hidden');
+    let openPrContent = '';
+    let recentPrContent = '';
+    if (state.showRecentPRs) {
+      recentPrContent = state.recentPRs.map(pr => renderPR(pr)).join('');
+    } else if (state.isFetchingOpenPRs && state.PRs.length === 0) {
+      openPrContent = `Fetching ${state.config.team} pull requests...`;
+    } else {
+      const displayPRs = state.PRs
+       .filter(pr => state.showDependabotPRs || pr.author.login !== 'dependabot')
+       .filter(pr => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main'))
+       .filter(pr => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null));
+
+      openPrContent = displayPRs.length === 0 ? 'No PRs found' : displayPRs.map(pr => renderPR(pr, false, state.showMasterPRs)).join('');
       document.title = `(${displayPRs.length}) PR Radiator`;
-      content = displayPRs.map(pr => renderPR(pr, false, state.showMasterPRs)).join('');
+    }
+    openPrView.innerHTML = openPrContent;
+    recentPrView.innerHTML = recentPrContent;
+    if (state.showRecentPRs) {
+      openPrView.classList.add('hidden');
+      recentPrView.classList.remove('hidden');
+    } else {
+      openPrView.classList.remove('hidden');
+      recentPrView.classList.add('hidden');
     }
   }
 
-  root.innerHTML = `<div class="App">${content}</div>`;
+  if (showRepoLinks && ignoreMode) {
+    repoList.focus(); // Focus the ul
+    const repoItems = repoList.querySelectorAll('.repo-item');
+    repoItems.forEach(item => {
+      item.removeEventListener('click', toggleIgnoreHandler);
+      item.addEventListener('click', toggleIgnoreHandler);
+    });
+  }
+};
+
+const toggleIgnoreHandler = (e) => {
+  const repo = e.currentTarget.dataset.repo;
+  e.currentTarget.classList.add('toggled');
+  setTimeout(() => {
+    e.currentTarget.classList.remove('toggled');
+  }, 200);
+  toggleIgnoreForRepo(repo);
 };
 
 const useInterval = (callback, delay) => {
