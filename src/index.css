@@ -274,7 +274,7 @@ a {
 
 .static-mode .repo-item.ignored a::after {
   content: " [IGNORED]";
-  color: inherit; /* Inherit dimmed teal for tag consistency */
+  color: #ff6b6b; /* Red tag (overrides dimmed gray) */
   font-weight: normal;
   text-decoration: none;
   display: inline;
