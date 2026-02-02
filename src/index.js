@@ -22,14 +22,74 @@ const RepositoriesQuery = (owner, team, next) => {
   return `{organization(login: "${owner}") {team(slug: "${team}") {repositories(first: 100, after: ${after}) {totalCount pageInfo {endCursor hasNextPage} edges {permission node {name isArchived}}}}}}`;
 };
 
-const innerRecentPRsQuery = `ref(qualifiedName:"master") {target {... on Commit {history(first: 25, since: "%s") {nodes {committedDate messageHeadline parents {totalCount} associatedPullRequests(first:5) {nodes { createdAt number title url author { login } repository { name } }}}}}}}`;
+const innerRecentPRsQuery = `
+  mainRef: ref(qualifiedName: "refs/heads/main") {
+    ...RecentCommitHistory
+  }
+  masterRef: ref(qualifiedName: "refs/heads/master") {
+    ...RecentCommitHistory
+  }
+`;
+
+const recentCommitHistoryFragment = `
+  fragment RecentCommitHistory on Ref {
+    target {
+      ... on Commit {
+        history(first: 25, since: "%s") {
+          nodes {
+            committedDate
+            messageHeadline
+            parents {
+              totalCount
+            }
+            associatedPullRequests(first: 5) {
+              nodes {
+                createdAt
+                number
+                title
+                url
+                author { login }
+                repository { name }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+
 const innerOpenPRsQuery = `pullRequests(last: 15, states: OPEN) { nodes {title url createdAt baseRefName headRefOid isDraft number author { login } comments (first: 50) {nodes {createdAt author { login }}} reviews(first: 50) {nodes {state createdAt author { login }}} commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}}} reviewDecision }}`;
 
 const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
-  const innerQuery = type === 'recent' ? innerRecentPRsQuery.replace('%s', sinceDateTime) : innerOpenPRsQuery;
-  const batchedRepos = repos.map((repo) => `${repo.replace(/[^a-zA-Z0-9]/g, '')}:repository(owner: "${owner}", name: "${repo}") { name ${innerQuery} }`).join(' ');
+  let innerQuery;
+  if (type === 'recent') {
+    innerQuery = innerRecentPRsQuery.replace('%s', sinceDateTime);
+  } else {
+    innerQuery = innerOpenPRsQuery;
+  }
 
-  return `query ${type}PRs { ${batchedRepos} }`;
+  const batchedRepos = repos
+    .map((repo) => {
+      const safeAlias = repo.replace(/[^a-zA-Z0-9]/g, '');
+      return `${safeAlias}:repository(owner: "${owner}", name: "${repo}") { name ${innerQuery} }`;
+    })
+    .join(' ');
+
+  // For 'recent', put FRAGMENT FIRST, then the query body
+  if (type === 'recent') {
+    const fragmentPart = recentCommitHistoryFragment.replace('%s', sinceDateTime);
+    return `
+      ${fragmentPart}
+
+      query ${type}PRs {
+        ${batchedRepos}
+      }
+    `;
+  } else {
+    return `query ${type}PRs { ${batchedRepos} }`;
+  }
 };
 
 const api = {
@@ -136,13 +196,17 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos) => {
     results.forEach((result) => {
       const keys = Object.keys(result.data);
       keys.forEach((key) => {
-        const keyRefCommits = result.data[key]?.ref?.target?.history?.nodes ?? [];
-        if (keyRefCommits.length > 0) {
-          refCommits.push(result.data[key].ref);
+        const repoData = result.data[key];
+        const mainRef = repoData.mainRef;
+        if (mainRef?.target?.history?.nodes?.length > 0) {
+          refCommits.push(mainRef);
+        }
+        const masterRef = repoData.masterRef;
+        if (masterRef?.target?.history?.nodes?.length > 0) {
+          refCommits.push(masterRef);
         }
       });
     });
-
 
     const recentPullRequests = [];
     refCommits.forEach(ref => ref.target.history.nodes.forEach((commit) => (commit.parents.totalCount > 1) ? commit.associatedPullRequests.nodes.forEach((pr) => {
