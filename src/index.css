@@ -342,6 +342,14 @@ a {
   white-space: nowrap;
 }
 
+.nav-hint {
+  color: #555;
+  font-size: 11px;
+  font-weight: 400;
+  margin-top: 4px;
+  white-space: nowrap;
+}
+
 .section-header .pr-state {
   color: #8a8a6f;
   font-weight: 400;

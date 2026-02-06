@@ -3,7 +3,7 @@ const byCommittedDateDesc = (a, b) => b.committedDate.getTime() - a.committedDat
 
 const progressBar = document.getElementById('progress-bar');
 const repoView = document.getElementById('repo-view');
-const repoTitle = document.getElementById('repo-title');
+const repoHeader = document.getElementById('repo-header');
 const repoList = document.getElementById('repo-list');
 const repoNavHint = document.getElementById('repo-nav-hint');
 const prView = document.getElementById('pr-view');
@@ -517,24 +517,30 @@ const render = () => {
   if (showRepoLinks) {
     repoView.classList.remove('hidden');
     prView.classList.add('hidden');
-    let titleText, listHtml, navHint;
+    let listHtml, navHint;
+    const repoSectionHeader = (title, badgeContent, mode = '') => {
+      const modeLabel = mode ? ` <span class="pr-state">${mode}</span>` : '';
+      const badgeEl = badgeContent !== null ? `(${badgeContent}${modeLabel})` : '';
+      return `${title} ${badgeEl}`;
+    };
     if (ignoreMode) {
-      titleText = `${team} repositories (${repos.length}) - Edit Ignores (press i to exit)`;
+      const headerHtml = repoSectionHeader('Repositories', repos.length, 'edit ignores');
+      repoHeader.innerHTML = headerHtml;
       listHtml = repos.map((repo, index) => {
         const isIgnored = isRepoIgnored(repo);
         const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
         return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${repo}</li>`;
       }).join('');
-      navHint = '<p>Navigate: j/k or arrows | Toggle: Enter/space or click</p>';
+      navHint = 'j/k or arrows to navigate · enter/space or click to toggle · i to exit';
     } else {
-      titleText = `${team} repositories (${repos.length}) (i to edit ignores)`;
+      const headerHtml = repoSectionHeader('Repositories', repos.length);
+      repoHeader.innerHTML = headerHtml;
       listHtml = repos.map((repo) => {
         const isIgnored = isRepoIgnored(repo);
         return `<li class="repo-item ${isIgnored ? 'ignored' : ''}"><a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener">${repo}</a></li>`;
       }).join('');
-      navHint = ''; // Empty for static mode
+      navHint = 'i to edit ignores';
     }
-    repoTitle.innerHTML = titleText;
     repoList.innerHTML = listHtml;
     repoNavHint.innerHTML = navHint;
     repoList.classList.toggle('ignore-mode', ignoreMode);
