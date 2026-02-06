@@ -334,3 +334,29 @@ a {
 .view.hidden {
     display: none; /* Completely hide, no layout space */
 }
+
+.section-header {
+  color: #fabd2f;               /* Magit/Forge yellow-brownish */
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.section-header .pr-state {
+  color: #8a8a6f;
+  font-weight: 400;
+}
+
+.section-header .fetching-spinner {
+  color: #dbab09 !important;    /* Yellow spinner */
+  animation: gentle-pulse 1.8s infinite ease-in-out;
+}
+
+@keyframes gentle-pulse {
+  0%, 100% { 
+    opacity: 0.65; 
+  }
+  50% { 
+    opacity: 1; 
+  }
+}

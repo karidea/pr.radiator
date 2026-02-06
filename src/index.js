@@ -188,6 +188,7 @@ const parseDatesInPR = (pr) => {
 
 const fetchRecentPRs = async (token, owner, repos, ignoreRepos) => {
   try {
+    setState({ isFetchingRecentPRs: true });
     startProgress();
     const filteredRepos = repos.filter(repo => !ignoreRepos.includes(repo));
     const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
@@ -223,6 +224,7 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos) => {
     console.log('Failed to fetch recent PRs', error);
   } finally {
     stopProgress();
+    setState({ isFetchingRecentPRs: false });
   }
 };
 
@@ -416,6 +418,7 @@ const initialState = {
   ignoreMode: false,
   selectedRepoIndex: -1,
   isFetchingOpenPRs: false,
+  isFetchingRecentPRs: false,
 };
 
 let state = { ...initialState };
@@ -541,19 +544,35 @@ const render = () => {
     prView.classList.remove('hidden');
     let openPrContent = '';
     let recentPrContent = '';
+    const sectionHeader = (title, badgeContent = null, prState = '') => {
+      const stateLabel = prState ? `<span class="pr-state">${prState.toLowerCase()}</span>` : '';
+      const badgeEl = badgeContent !== null ? `(${badgeContent} ${stateLabel})` : '';
+      return `<div class="section-header">${title} ${badgeEl}</div>`;
+    };
+
     if (state.showRecentPRs) {
-      recentPrContent = state.recentPRs.map(pr => renderPR(pr)).join('');
-    } else if (state.isFetchingOpenPRs && state.PRs.length === 0) {
-      openPrContent = `Fetching ${state.config.team} pull requests...`;
+      const displayPRs = state.recentPRs;  // No filters
+      const count = displayPRs.length;
+      const badge = state.isFetchingRecentPRs
+        ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
+        : count;
+      recentPrContent = sectionHeader('Pull requests', badge, 'MERGED') + displayPRs.map(pr => renderPR(pr)).join('');
+      const viewCount = state.showRecentPRs ? state.recentPRs.length : displayPRs.length;  // view-specific count
+      document.title = `(${viewCount}) PR Radiator`;
     } else {
       const displayPRs = state.PRs
-       .filter(pr => state.showDependabotPRs || pr.author.login !== 'dependabot')
-       .filter(pr => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main'))
-       .filter(pr => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null));
-
-      openPrContent = displayPRs.length === 0 ? 'No PRs found' : displayPRs.map(pr => renderPR(pr, false, state.showMasterPRs)).join('');
-      document.title = `(${displayPRs.length}) PR Radiator`;
+        .filter(pr => state.showDependabotPRs || pr.author.login !== 'dependabot')
+        .filter(pr => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main'))
+        .filter(pr => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null));
+      const count = displayPRs.length;
+      const badge = state.isFetchingOpenPRs
+        ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
+        : count;
+      openPrContent = sectionHeader('Pull requests', badge, 'OPEN') + displayPRs.map(pr => renderPR(pr, false, state.showMasterPRs)).join('');
+      const viewCount = state.showRecentPRs ? state.recentPRs.length : displayPRs.length;  // view-specific count
+      document.title = `(${viewCount}) PR Radiator`;
     }
+
     openPrView.innerHTML = openPrContent;
     recentPrView.innerHTML = recentPrContent;
     if (state.showRecentPRs) {
