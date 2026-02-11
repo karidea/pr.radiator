@@ -8,7 +8,11 @@ const repoList = document.getElementById('repo-list');
 const repoNavHint = document.getElementById('repo-nav-hint');
 const prView = document.getElementById('pr-view');
 const openPrView = document.getElementById('open-pr-view');
+const openPrHeader = document.getElementById('open-pr-header');
+const openPrList = document.getElementById('open-pr-list');
 const recentPrView = document.getElementById('recent-pr-view');
+const recentPrHeader = document.getElementById('recent-pr-header');
+const recentPrList = document.getElementById('recent-pr-list');
 const settingsForm = document.getElementById('settings-form');
 const shortcutsOverlay = document.getElementById('shortcuts-overlay');
 const ownerInput = document.getElementById('owner');
@@ -377,15 +381,16 @@ const formatDistanceToNow = (date) => {
   return `about ${years} year${years === 1 ? '' : 's'} ago`;
 };
 
-const renderPR = (pr, isRecent = true, showBranch = false) => {
+const renderPR = (pr, isRecent = true, showBranch = false, index = 0, isSelected = false) => {
   const { number, title, url, repository } = pr;
   const dateKey = isRecent ? 'committedDate' : 'createdAt';
   const date = pr[dateKey];
   const elapsedTimeStr = formatDistanceToNow(date, { addSuffix: true, includeSeconds: true });
   const id = `pr-time-${pr.url}`;
+  const selectedClass = isSelected ? 'selected' : '';
 
   if (isRecent) {
-    return `<div><span id="${id}" title="${date}">${elapsedTimeStr}</span> ${pr.author.login}&nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}/pull/${number}</a>&nbsp;${title}</div>`;
+    return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}"><div class="pr-main-line"><span id="${id}" title="${date}">${elapsedTimeStr}</span> ${pr.author.login}&nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}/pull/${number}</a>&nbsp;${title}</div></li>`;
   }
 
   const { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, commits } = pr;
@@ -394,10 +399,13 @@ const renderPR = (pr, isRecent = true, showBranch = false) => {
   const reviewState = reviews.nodes.length === 0 ? ExclamationCircle() : '';
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
   const branch = showBranch ? baseRefName : '';
-  const eventOutput = events.length > 0 ? `<br>&nbsp;&nbsp;${events.map((event, index) => TimelineEvent({ ...event, key: index })).join('')}` : '';
   const timestamp = `<span id="${id}" title="${date}">${elapsedTimeStr}</span>`;
+  const ageClass = getAgeString(createdAt);
+  
+  const mainLine = `<div class="pr-main-line ${ageClass}">${timestamp} ${reviewState} ${commitState} ${branch} ${author} ${prLink} ${title}</div>`;
+  const eventLines = events.length > 0 ? `<div class="pr-event-lines">&nbsp;&nbsp;${events.map((event, index) => TimelineEvent({ ...event, key: index })).join('')}</div>` : '';
 
-  return `<div class="${getAgeString(createdAt)}">${timestamp} ${reviewState} ${commitState} ${branch} ${author} ${prLink} ${title} ${eventOutput}</div>`;
+  return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}">${mainLine}${eventLines}</li>`;
 };
 
 const initialState = {
@@ -415,8 +423,8 @@ const initialState = {
   showNeedsReviewPRs: false,
   showRecentPRs: false,
   showRepoLinks: false,
-  ignoreMode: false,
   selectedRepoIndex: -1,
+  selectedPrIndex: -1,
   isFetchingOpenPRs: false,
   isFetchingRecentPRs: false,
 };
@@ -496,7 +504,7 @@ const onSubmit = (event) => {
 };
 
 const render = () => {
-  const { config: { token, owner, team, repos }, ignoreMode, selectedRepoIndex, showRepoLinks } = state;
+  const { config: { token, owner, team, repos }, selectedRepoIndex, selectedPrIndex, showRepoLinks } = state;
   document.title = 'PR Radiator';
 
   if (!token || !owner || !team) {
@@ -509,47 +517,47 @@ const render = () => {
 
   if (repos.length === 0) {
     repoView.classList.add('hidden');
-    openPrView.innerHTML = `<div>Fetching ${team} team repositories...</div>`;
-    openPrView.classList.remove('hidden'); // Show loading in PR view
+    openPrHeader.innerHTML = `<div>Fetching ${team} team repositories...</div>`;
+    openPrList.innerHTML = '';
+    openPrView.classList.remove('hidden');
     return;
   }
 
   if (showRepoLinks) {
     repoView.classList.remove('hidden');
     prView.classList.add('hidden');
-    let listHtml, navHint;
-    const repoSectionHeader = (title, badgeContent, mode = '') => {
-      const modeLabel = mode ? ` <span class="pr-state">${mode}</span>` : '';
-      const badgeEl = badgeContent !== null ? `(${badgeContent}${modeLabel})` : '';
+    
+    const repoSectionHeader = (title, badgeContent) => {
+      const badgeEl = badgeContent !== null ? `(${badgeContent})` : '';
       return `${title} ${badgeEl}`;
     };
-    if (ignoreMode) {
-      const headerHtml = repoSectionHeader('Repositories', repos.length, 'edit ignores');
-      repoHeader.innerHTML = headerHtml;
-      listHtml = repos.map((repo, index) => {
-        const isIgnored = isRepoIgnored(repo);
-        const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
-        return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${repo}</li>`;
-      }).join('');
-      navHint = 'j/k or arrows to navigate · enter/space or click to toggle · i to exit';
-    } else {
-      const headerHtml = repoSectionHeader('Repositories', repos.length);
-      repoHeader.innerHTML = headerHtml;
-      listHtml = repos.map((repo) => {
-        const isIgnored = isRepoIgnored(repo);
-        return `<li class="repo-item ${isIgnored ? 'ignored' : ''}"><a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener">${repo}</a></li>`;
-      }).join('');
-      navHint = 'i to edit ignores';
-    }
+    
+    const headerHtml = repoSectionHeader('Repositories', repos.length);
+    repoHeader.innerHTML = headerHtml;
+    
+    const listHtml = repos.map((repo, index) => {
+      const isIgnored = isRepoIgnored(repo);
+      const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
+      return `<li class="${classes}" data-index="${index}" data-repo="${repo}"><a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener noreferrer">${repo}</a></li>`;
+    }).join('');
+    
     repoList.innerHTML = listHtml;
-    repoNavHint.innerHTML = navHint;
-    repoList.classList.toggle('ignore-mode', ignoreMode);
-    repoList.classList.toggle('static-mode', !ignoreMode);
+    repoNavHint.innerHTML = 'j/k to navigate · enter to open · i to toggle ignore';
+    
+    // Focus and scroll to selected item
+    if (selectedRepoIndex >= 0) {
+      repoList.focus();
+      setTimeout(() => {
+        const selectedItem = repoList.querySelector('.repo-item.selected');
+        if (selectedItem) {
+          selectedItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }, 0);
+    }
   } else {
     repoView.classList.add('hidden');
     prView.classList.remove('hidden');
-    let openPrContent = '';
-    let recentPrContent = '';
+    
     const sectionHeader = (title, badgeContent = null, prState = '') => {
       const stateLabel = prState ? `<span class="pr-state">${prState.toLowerCase()}</span>` : '';
       const badgeEl = badgeContent !== null ? `(${badgeContent} ${stateLabel})` : '';
@@ -557,14 +565,28 @@ const render = () => {
     };
 
     if (state.showRecentPRs) {
-      const displayPRs = state.recentPRs;  // No filters
+      const displayPRs = state.recentPRs;
       const count = displayPRs.length;
       const badge = state.isFetchingRecentPRs
         ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
         : count;
-      recentPrContent = sectionHeader('Pull requests', badge, 'MERGED') + displayPRs.map(pr => renderPR(pr)).join('');
-      const viewCount = state.showRecentPRs ? state.recentPRs.length : displayPRs.length;  // view-specific count
-      document.title = `(${viewCount}) PR Radiator`;
+      recentPrHeader.innerHTML = sectionHeader('Pull requests', badge, 'MERGED');
+      recentPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, true, false, index, index === selectedPrIndex)).join('');
+      document.title = `(${count}) PR Radiator`;
+      
+      recentPrView.classList.remove('hidden');
+      openPrView.classList.add('hidden');
+      
+      // Focus and scroll to selected item
+      if (selectedPrIndex >= 0) {
+        recentPrList.focus();
+        setTimeout(() => {
+          const selectedItem = recentPrList.querySelector('.pr-item.selected');
+          if (selectedItem) {
+            selectedItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
+        }, 0);
+      }
     } else {
       const displayPRs = state.PRs
         .filter(pr => state.showDependabotPRs || pr.author.login !== 'dependabot')
@@ -574,39 +596,25 @@ const render = () => {
       const badge = state.isFetchingOpenPRs
         ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
         : count;
-      openPrContent = sectionHeader('Pull requests', badge, 'OPEN') + displayPRs.map(pr => renderPR(pr, false, state.showMasterPRs)).join('');
-      const viewCount = state.showRecentPRs ? state.recentPRs.length : displayPRs.length;  // view-specific count
-      document.title = `(${viewCount}) PR Radiator`;
-    }
-
-    openPrView.innerHTML = openPrContent;
-    recentPrView.innerHTML = recentPrContent;
-    if (state.showRecentPRs) {
-      openPrView.classList.add('hidden');
-      recentPrView.classList.remove('hidden');
-    } else {
+      openPrHeader.innerHTML = sectionHeader('Pull requests', badge, 'OPEN');
+      openPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, false, state.showMasterPRs, index, index === selectedPrIndex)).join('');
+      document.title = `(${count}) PR Radiator`;
+      
       openPrView.classList.remove('hidden');
       recentPrView.classList.add('hidden');
+      
+      // Focus and scroll to selected item
+      if (selectedPrIndex >= 0) {
+        openPrList.focus();
+        setTimeout(() => {
+          const selectedItem = openPrList.querySelector('.pr-item.selected');
+          if (selectedItem) {
+            selectedItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
+        }, 0);
+      }
     }
   }
-
-  if (showRepoLinks && ignoreMode) {
-    repoList.focus(); // Focus the ul
-    const repoItems = repoList.querySelectorAll('.repo-item');
-    repoItems.forEach(item => {
-      item.removeEventListener('click', toggleIgnoreHandler);
-      item.addEventListener('click', toggleIgnoreHandler);
-    });
-  }
-};
-
-const toggleIgnoreHandler = (e) => {
-  const repo = e.currentTarget.dataset.repo;
-  e.currentTarget.classList.add('toggled');
-  setTimeout(() => {
-    e.currentTarget.classList.remove('toggled');
-  }, 200);
-  toggleIgnoreForRepo(repo);
 };
 
 const useInterval = (callback, delay) => {
@@ -645,66 +653,108 @@ const init = async () => {
   }
 
   document.addEventListener('keydown', (event) => {
-  if (settingsForm.style.display === 'block' || document.activeElement.tagName === 'INPUT') return;
+    if (settingsForm.style.display === 'block' || document.activeElement.tagName === 'INPUT') return;
 
-  const { showRepoLinks, ignoreMode } = state;
+    const { showRepoLinks } = state;
 
-  // Ignore mode handlers (only active when in repo view and ignoreMode)
-  if (showRepoLinks && ignoreMode) {
+    // Repository navigation (when in repo view)
+    if (showRepoLinks) {
       let handled = true;
       switch (event.key) {
-      case 'j':
-      case 'ArrowDown':
+        case 'j':
+        case 'ArrowDown':
           if (state.config.repos.length > 0) {
-          const newIndex = Math.min(state.config.repos.length - 1, state.selectedRepoIndex + 1);
-          setState({ selectedRepoIndex: newIndex });
+            const newIndex = state.selectedRepoIndex < 0 ? 0 : Math.min(state.config.repos.length - 1, state.selectedRepoIndex + 1);
+            setState({ selectedRepoIndex: newIndex });
           }
           break;
-      case 'k':
-      case 'ArrowUp':
+        case 'k':
+        case 'ArrowUp':
           if (state.config.repos.length > 0) {
-          const newIndex = Math.max(0, state.selectedRepoIndex - 1);
-          setState({ selectedRepoIndex: newIndex });
+            const newIndex = state.selectedRepoIndex < 0 ? 0 : Math.max(0, state.selectedRepoIndex - 1);
+            setState({ selectedRepoIndex: newIndex });
           }
           break;
-      case 'Enter':
-      case ' ':
-          event.preventDefault(); // Prevent space from scrolling
+        case 'Enter':
           if (state.config.repos.length > 0 && state.selectedRepoIndex >= 0) {
-          const repo = state.config.repos[state.selectedRepoIndex];
-          toggleIgnoreForRepo(repo);
+            const repo = state.config.repos[state.selectedRepoIndex];
+            const url = `https://github.com/${state.config.owner}/${repo}`;
+            window.open(url, '_blank', 'noopener,noreferrer');
           }
           break;
-      default:
+        case 'i':
+          if (state.config.repos.length > 0 && state.selectedRepoIndex >= 0) {
+            const repo = state.config.repos[state.selectedRepoIndex];
+            toggleIgnoreForRepo(repo);
+          }
+          break;
+        default:
           handled = false;
       }
       if (handled) return;
-  }
+    }
 
-// Existing handlers (skip if in repo view and ignoreMode, except for 'i', 'l', and '?' to allow toggle-off, full exit, and shortcuts)
-  if (showRepoLinks && ignoreMode && event.key !== 'i' && event.key !== 'l' && event.key !== '?') return;
+    // PR navigation (when not in repo view)
+    if (!showRepoLinks) {
+      const displayPRs = state.showRecentPRs
+        ? state.recentPRs
+        : state.PRs
+            .filter(pr => state.showDependabotPRs || pr.author.login !== 'dependabot')
+            .filter(pr => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main'))
+            .filter(pr => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null));
 
-  const handlers = {
+      let handled = true;
+      switch (event.key) {
+        case 'j':
+        case 'ArrowDown':
+          if (displayPRs.length > 0) {
+            const newIndex = state.selectedPrIndex < 0 ? 0 : Math.min(displayPRs.length - 1, state.selectedPrIndex + 1);
+            setState({ selectedPrIndex: newIndex });
+          }
+          break;
+        case 'k':
+        case 'ArrowUp':
+          if (displayPRs.length > 0) {
+            const newIndex = state.selectedPrIndex < 0 ? 0 : Math.max(0, state.selectedPrIndex - 1);
+            setState({ selectedPrIndex: newIndex });
+          }
+          break;
+        case 'Enter':
+          if (displayPRs.length > 0 && state.selectedPrIndex >= 0) {
+            const pr = displayPRs[state.selectedPrIndex];
+            window.open(pr.url, '_blank', 'noopener,noreferrer');
+          }
+          break;
+        default:
+          handled = false;
+      }
+      if (handled) return;
+    }
+
+    // Global handlers
+    const handlers = {
       d: () => setState({ showDependabotPRs: !state.showDependabotPRs }),
       m: () => setState({ showMasterPRs: !state.showMasterPRs }),
       n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs }),
       a: () => {
-      const newShow = !state.showRecentPRs;
-      setState({ showRecentPRs: newShow });
-      if (newShow && state.config.token && state.config.owner && state.config.repos.length > 0) {
+        const newShow = !state.showRecentPRs;
+        // Clamp selectedPrIndex to new list bounds
+        const newCount = newShow ? state.recentPRs.length : state.PRs.length;
+        const clampedIndex = state.selectedPrIndex >= newCount ? Math.max(0, newCount - 1) : state.selectedPrIndex;
+        setState({ showRecentPRs: newShow, selectedPrIndex: clampedIndex });
+        if (newShow && state.config.token && state.config.owner && state.config.repos.length > 0) {
           fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-      }
+        }
       },
       l: () => {
-        // UPDATED: Toggle repo view (combined static/interactive); in ignore mode, full exit to PRs
         const newShow = !showRepoLinks;
         if (newShow) {
-          // Entering repo view: Always start in static mode
+          // Entering repo view
           setState({
             showRepoLinks: newShow,
-            ignoreMode: false,
-            selectedRepoIndex: 0,
-            showRecentPRs: false, // Exit recent view if entering
+            selectedRepoIndex: -1,
+            selectedPrIndex: -1,
+            showRecentPRs: false,
           });
         } else {
           // Exiting repo view: Save ignores and refresh PRs
@@ -714,60 +764,45 @@ const init = async () => {
           }
           setState({
             showRepoLinks: newShow,
-            ignoreMode: false, // Ensure cleanup
             selectedRepoIndex: -1,
+            selectedPrIndex: -1,
           });
         }
       },
-      i: () => {
-      // Toggle ignore mode ONLY if in repo view; otherwise ignore
-      if (!showRepoLinks) return; // Contextual: Only works in repo view
-      const newMode = !ignoreMode;
-      if (!newMode) {
-          // Exiting: Save and refresh PRs (like other toggles)
-          localStorage.setItem('PR_RADIATOR_IGNORE_REPOS', JSON.stringify(state.config.ignoreRepos));
-          if (state.config.token && state.config.owner && state.config.repos.length > 0) {
-          fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-          }
-      }
-      setState({
-          ignoreMode: newMode,
-          selectedRepoIndex: newMode ? 0 : -1,
-      });
-      },
       r: () => {
-      if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+        if (state.config.token && state.config.owner && state.config.repos.length > 0) {
           fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-      }
+        }
+        setState({ selectedPrIndex: -1 });
       },
       '\\': () => {
-      setState({ config: { ...state.config, repos: [] }, PRs: [], recentPRs: [] });
-      startProgress();
-      api.queryTeamRepos(state.config.token, state.config.owner, state.config.team)
+        setState({ config: { ...state.config, repos: [] }, PRs: [], recentPRs: [], selectedRepoIndex: -1, selectedPrIndex: -1 });
+        startProgress();
+        api.queryTeamRepos(state.config.token, state.config.owner, state.config.team)
           .then(repos => api.filterTeamRepos(state.config.token, state.config.owner, state.config.team, repos))
           .then(filteredRepos => {
-          localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
-          setState({ config: { ...state.config, repos: filteredRepos } });
-          if (filteredRepos.length > 0) {
+            localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
+            setState({ config: { ...state.config, repos: filteredRepos } });
+            if (filteredRepos.length > 0) {
               fetchOpenPRs(state.config.token, state.config.owner, filteredRepos, state.config.ignoreRepos).catch(error => {
-              console.error('Error fetching PRs after repos', error);
-              stopProgress();
+                console.error('Error fetching PRs after repos', error);
+                stopProgress();
               });
-          } else {
+            } else {
               stopProgress();
-          }
+            }
           })
           .catch(error => {
-          console.error('Error fetching repos after submit', error);
-          stopProgress();
+            console.error('Error fetching repos after submit', error);
+            stopProgress();
           });
       },
       '?': () => {
-      shortcutsOverlay.style.display = shortcutsOverlay.style.display === 'none' ? 'block' : 'none';
+        shortcutsOverlay.style.display = shortcutsOverlay.style.display === 'none' ? 'block' : 'none';
       }
-  };
+    };
 
-  if (handlers[event.key]) handlers[event.key]();
+    if (handlers[event.key]) handlers[event.key]();
   });
 
   if (token && owner && team && repos.length === 0) {

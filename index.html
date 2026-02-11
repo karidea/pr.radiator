@@ -11,13 +11,19 @@
   <div id="progress-bar"></div>
   <div id="repo-view" class="view hidden">
     <div id="repo-header" class="section-header"></div>
-    <ul id="repo-list" class="repo-list ignore-mode static-mode" tabindex="-1">
+    <ul id="repo-list" class="repo-list" tabindex="-1">
     </ul>
     <div id="repo-nav-hint" class="nav-hint"></div>
   </div>
   <div id="pr-view" class="view">
-    <div id="open-pr-view" class="view"></div>
-    <div id="recent-pr-view" class="view hidden"></div>
+    <div id="open-pr-view" class="view">
+      <div id="open-pr-header"></div>
+      <ul id="open-pr-list" class="pr-list"></ul>
+    </div>
+    <div id="recent-pr-view" class="view hidden">
+      <div id="recent-pr-header"></div>
+      <ul id="recent-pr-list" class="pr-list"></ul>
+    </div>
   </div>
   <div id="settings-form" class="settings-form" style="display: none;">
     <form id="config-form">
@@ -34,8 +40,11 @@
     <div class="keyboard-shortcuts-content">
       <h2>Keyboard shortcuts</h2>
       <ul>
+        <li><strong>j/k</strong>: Navigate down/up</li>
+        <li><strong>Enter</strong>: Open selected item</li>
+        <li><strong>i</strong>: Toggle repo ignore (repo view only)</li>
         <li><strong>d</strong>: Toggle Dependabot PRs</li>
-        <li><strong>a</strong>: Toggle Recent PRs</li>
+        <li><strong>a</strong>: Toggle Merged PRs</li>
         <li><strong>m</strong>: Toggle Master PRs</li>
         <li><strong>n</strong>: Toggle Needs Review PRs</li>
         <li><strong>l</strong>: Toggle Repo Links</li>

@@ -219,112 +219,105 @@ a {
   }
 }
 
-/* Base styles for Repo Lists (shared between static and ignore modes) */
+/* Base styles for Repo Lists */
 .repo-list {
-  outline: none; /* No focus border, but accessible */
+  outline: none;
   margin: 0;
   padding: 0;
-  list-style: none; /* Ensure no bullets */
+  list-style: none;
 }
 
 .repo-list > li {
-  margin-bottom: 2px; /* Small vertical gap between items (consistent compactness) */
+  margin-bottom: 0;
 }
 
 .repo-item {
-  padding: 4px 8px; /* Uniform padding for boxed feel (matches ignore mode) */
+  padding: 2px 8px;
   border-radius: 4px;
-  transition: background-color 0.1s ease, transform 0.1s ease; /* Smooth hover/selection */
-  user-select: none; /* Prevent text selection */
-  line-height: 1.3; /* Tight, consistent text height */
-  margin: 0; /* Reset inherited margins */
-  box-sizing: border-box; /* Padding included in height calculation */
-  background-color: #1d1f24; /* Match body color (subtle box only on hover/selection) */
-  min-height: 22px; /* Lock row height to match ignore mode exactly */
-  display: flex; /* Flex for uniform alignment of text/link content */
-  align-items: center; /* Vertical center for consistency */
-  color: #49a29f; /* Bluish-greenish color matching PR links (applies to static mode) */
+  transition: background-color 0.1s ease, transform 0.1s ease;
+  user-select: none;
+  line-height: 1.3;
+  margin: 0;
+  box-sizing: border-box;
+  background-color: #1d1f24;
+  min-height: 18px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.repo-item a {
+  color: #49a29f;
+  text-decoration: none;
 }
 
 .repo-item:hover {
-  background-color: #2a2e34; /* Subtle hover highlight (shared) */
+  background-color: #2a2e34;
 }
 
-/* Static Mode (list view): Full clickable links, subtle ignored indication (no strikethrough) */
-.static-mode .repo-item {
-  cursor: auto; /* Default cursor */
+.repo-item.selected {
+  background-color: #3a3e44;
 }
 
-.static-mode .repo-item a {
-  display: block; /* Full row clickable */
-  width: 100%; /* Fill li */
-  color: inherit; /* Let .repo-item teal apply (link-like) */
-  text-decoration: none; /* No underline */
-  position: relative; /* For ::after inside link */
-  line-height: 1.3; /* Explicit tight line-height */
-  margin: 0; /* Zero margins */
-  padding: 0; /* No extra padding (li handles it) */
-  flex: 1; /* Fill flex space for alignment */
-}
-
-.static-mode .repo-item.ignored {
-  opacity: 0.8; /* Subtle dim (mutes teal to softer blue-green) */
-  text-decoration: none; /* No strikethrough */
-}
-
-.static-mode .repo-item.ignored a::after {
-  content: " [IGNORED]";
-  color: #ff6b6b; /* Red tag (overrides dimmed gray) */
-  font-weight: normal;
-  text-decoration: none;
-  display: inline;
-  white-space: nowrap;
-  display: inline-block; /* Prevents variable spacing from inline flow */
-  margin-left: 4px;
-  line-height: 1.3; /* Match row height */
-}
-
-.static-mode .repo-item.selected {
-  background-color: transparent; /* No selection in static */
-}
-
-/* Ignore Mode: Interactive, with strikethrough/red tag */
-.ignore-mode .repo-item {
-  cursor: pointer; /* Pointer for clicks */
-  display: flex; /* Match static flex for alignment */
-  align-items: center; /* Vertical center */
-  color: #ccc; /* FIX: Neutral light gray (body text feel, non-link-like; overrides teal) */
-}
-
-.ignore-mode .repo-item.toggled {
-  background-color: #22863a !important; /* Green flash */
+.repo-item.toggled {
+  background-color: #22863a !important;
   transform: scale(1.02);
-  color: #fff; /* White text on green flash for visibility */
 }
 
-.ignore-mode .repo-item.selected {
-  background-color: #3a3e44; /* Selection highlight */
+.repo-item.toggled a {
+  color: #fff;
 }
 
-.ignore-mode .repo-item.ignored {
-  text-decoration: line-through; /* Strikethrough in ignore mode */
-  opacity: 0.6; /* Dims gray to softer neutral */
+.repo-item.ignored {
+  text-decoration: line-through;
+  opacity: 0.6;
 }
 
-.ignore-mode .repo-item.ignored::after {
+.repo-item.ignored::after {
   content: " [IGNORED]";
-  color: #ff6b6b; /* Red tag (overrides dimmed gray) */
+  color: #ff6b6b;
   font-weight: bold;
   text-decoration: none;
-  display: inline-block; /* Prevents variable spacing from inline flow */
+  display: inline-block;
   margin-left: 4px;
-  line-height: 1.3; /* Match row height */
+  line-height: 1.3;
 }
 
-/* Focus/accessibility for both modes */
-.repo-list:focus .repo-item.selected {
-  box-shadow: 0 0 0 2px #49a29f; /* Teal focus ring */
+/* PR List styles */
+.pr-list {
+  outline: none;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
+
+.pr-list > li {
+  margin-bottom: 0;
+}
+
+.pr-item {
+  padding: 0;
+  border-radius: 4px;
+  transition: background-color 0.1s ease;
+  user-select: none;
+  margin: 0;
+  box-sizing: border-box;
+  background-color: #1d1f24;
+  display: block;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.pr-item.selected .pr-main-line {
+  background-color: #3a3e44;
+  border-radius: 4px;
+}
+
+.pr-event-lines {
+  padding: 0 4px;
+}
+
 
 /* View toggling: Hidden views are invisible but persist in DOM */
 .view {
