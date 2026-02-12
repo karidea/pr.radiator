@@ -419,7 +419,6 @@ const initialState = {
   PRs: [],
   recentPRs: [],
   showDependabotPRs: false,
-  showMasterPRs: true,
   showNeedsReviewPRs: false,
   showRecentPRs: false,
   showRepoLinks: false,
@@ -590,14 +589,13 @@ const render = () => {
     } else {
       const displayPRs = state.PRs
         .filter(pr => state.showDependabotPRs || pr.author.login !== 'dependabot')
-        .filter(pr => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main'))
         .filter(pr => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null));
       const count = displayPRs.length;
       const badge = state.isFetchingOpenPRs
         ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
         : count;
       openPrHeader.innerHTML = sectionHeader('Pull requests', badge, 'OPEN');
-      openPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, false, state.showMasterPRs, index, index === selectedPrIndex)).join('');
+      openPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, false, true, index, index === selectedPrIndex)).join('');
       document.title = `(${count}) PR Radiator`;
       
       openPrView.classList.remove('hidden');
@@ -737,7 +735,6 @@ const init = async () => {
         ? state.recentPRs
         : state.PRs
             .filter(pr => state.showDependabotPRs || pr.author.login !== 'dependabot')
-            .filter(pr => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main'))
             .filter(pr => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null));
 
       const handled = handleNavigation(
@@ -751,69 +748,78 @@ const init = async () => {
 
     // Global handlers
     const handlers = {
-      d: () => setState({ showDependabotPRs: !state.showDependabotPRs }),
-      m: () => setState({ showMasterPRs: !state.showMasterPRs }),
-      n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs }),
-      a: () => {
-        const newShow = !state.showRecentPRs;
-        // Clamp selectedPrIndex to new list bounds
-        const newCount = newShow ? state.recentPRs.length : state.PRs.length;
-        const clampedIndex = state.selectedPrIndex >= newCount ? Math.max(0, newCount - 1) : state.selectedPrIndex;
-        setState({ showRecentPRs: newShow, selectedPrIndex: clampedIndex });
-        if (newShow && state.config.token && state.config.owner && state.config.repos.length > 0) {
-          fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-        }
-      },
-      l: () => {
-        const newShow = !showRepoLinks;
-        if (newShow) {
-          // Entering repo view
-          setState({
-            showRepoLinks: newShow,
-            selectedRepoIndex: -1,
-            selectedPrIndex: -1,
-            showRecentPRs: false,
-          });
-        } else {
-          // Exiting repo view: Save ignores and refresh PRs
-          localStorage.setItem('PR_RADIATOR_IGNORE_REPOS', JSON.stringify(state.config.ignoreRepos));
-          if (state.config.token && state.config.owner && state.config.repos.length > 0) {
-            fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-          }
-          setState({
-            showRepoLinks: newShow,
-            selectedRepoIndex: -1,
-            selectedPrIndex: -1,
-          });
-        }
-      },
-      r: () => {
+      o: () => {
+        // Open PRs view
+        setState({
+          showRecentPRs: false,
+          showRepoLinks: false,
+          selectedRepoIndex: -1,
+          selectedPrIndex: -1,
+        });
         if (state.config.token && state.config.owner && state.config.repos.length > 0) {
           fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
         }
-        setState({ selectedPrIndex: -1 });
       },
-      '\\': () => {
-        setState({ config: { ...state.config, repos: [] }, PRs: [], recentPRs: [], selectedRepoIndex: -1, selectedPrIndex: -1 });
-        startProgress();
-        api.queryTeamRepos(state.config.token, state.config.owner, state.config.team)
-          .then(repos => api.filterTeamRepos(state.config.token, state.config.owner, state.config.team, repos))
-          .then(filteredRepos => {
-            localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
-            setState({ config: { ...state.config, repos: filteredRepos } });
-            if (filteredRepos.length > 0) {
-              fetchOpenPRs(state.config.token, state.config.owner, filteredRepos, state.config.ignoreRepos).catch(error => {
-                console.error('Error fetching PRs after repos', error);
-                stopProgress();
-              });
-            } else {
-              stopProgress();
-            }
-          })
-          .catch(error => {
-            console.error('Error fetching repos after submit', error);
-            stopProgress();
+      m: () => {
+        // Merged PRs view - toggle back to open if currently viewing merged
+        if (state.showRecentPRs && !state.showRepoLinks) {
+          // Currently in merged view, go back to open
+          setState({
+            showRecentPRs: false,
+            showRepoLinks: false,
+            selectedRepoIndex: -1,
+            selectedPrIndex: -1,
           });
+          if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+            fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
+          }
+        } else {
+          // Go to merged view
+          setState({
+            showRecentPRs: true,
+            showRepoLinks: false,
+            selectedRepoIndex: -1,
+            selectedPrIndex: -1,
+          });
+          if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+            fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
+          }
+        }
+      },
+      l: () => {
+        // Repo links view - toggle back to open if currently viewing repos
+        if (state.showRepoLinks) {
+          // Currently in repo view, go back to open
+          localStorage.setItem('PR_RADIATOR_IGNORE_REPOS', JSON.stringify(state.config.ignoreRepos));
+          setState({
+            showRepoLinks: false,
+            showRecentPRs: false,
+            selectedRepoIndex: -1,
+            selectedPrIndex: -1,
+          });
+          if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+            fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
+          }
+        } else {
+          // Go to repo view
+          setState({
+            showRepoLinks: true,
+            selectedRepoIndex: -1,
+            selectedPrIndex: -1,
+          });
+        }
+      },
+      d: () => setState({ showDependabotPRs: !state.showDependabotPRs }),
+      n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs }),
+      r: () => {
+        if (state.config.token && state.config.owner && state.config.repos.length > 0) {
+          if (state.showRecentPRs) {
+            fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
+          } else if (!state.showRepoLinks) {
+            fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
+          }
+        }
+        setState({ selectedPrIndex: -1, selectedRepoIndex: -1 });
       },
       '?': () => {
         shortcutsOverlay.style.display = shortcutsOverlay.style.display === 'none' ? 'block' : 'none';
