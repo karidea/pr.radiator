@@ -252,10 +252,6 @@ a {
   text-decoration: none;
 }
 
-.repo-item:hover {
-  background-color: #2a2e34;
-}
-
 .repo-item.selected {
   background-color: #3a3e44;
 }

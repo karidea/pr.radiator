@@ -390,7 +390,7 @@ const renderPR = (pr, isRecent = true, showBranch = false, index = 0, isSelected
   const selectedClass = isSelected ? 'selected' : '';
 
   if (isRecent) {
-    return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}"><div class="pr-main-line"><span id="${id}" title="${date}">${elapsedTimeStr}</span> ${pr.author.login}&nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}/pull/${number}</a>&nbsp;${title}</div></li>`;
+    return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}"><div class="pr-main-line"><span id="${id}" title="${date}">${elapsedTimeStr}</span> ${pr.author.login}&nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${number}</a>&nbsp;${title}</div></li>`;
   }
 
   const { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, commits } = pr;
@@ -652,49 +652,86 @@ const init = async () => {
     settingsForm.setAttribute('data-initialized', 'true');  // Prevent duplicate setup
   }
 
+  // Track last key press for 'gg' detection
+  let lastKeyPress = { key: null, timestamp: 0 };
+
   document.addEventListener('keydown', (event) => {
     if (settingsForm.style.display === 'block' || document.activeElement.tagName === 'INPUT') return;
 
     const { showRepoLinks } = state;
 
-    // Repository navigation (when in repo view)
-    if (showRepoLinks) {
+    // Unified navigation handler
+    const handleNavigation = (items, currentIndex, indexKey, onEnter, extraHandlers = {}) => {
       let handled = true;
       switch (event.key) {
         case 'j':
         case 'ArrowDown':
-          if (state.config.repos.length > 0) {
-            const newIndex = state.selectedRepoIndex < 0 ? 0 : Math.min(state.config.repos.length - 1, state.selectedRepoIndex + 1);
-            setState({ selectedRepoIndex: newIndex });
+          if (items.length > 0) {
+            const newIndex = currentIndex < 0 ? 0 : Math.min(items.length - 1, currentIndex + 1);
+            setState({ [indexKey]: newIndex });
           }
           break;
         case 'k':
         case 'ArrowUp':
-          if (state.config.repos.length > 0) {
-            const newIndex = state.selectedRepoIndex < 0 ? 0 : Math.max(0, state.selectedRepoIndex - 1);
-            setState({ selectedRepoIndex: newIndex });
+          if (items.length > 0) {
+            const newIndex = currentIndex < 0 ? 0 : Math.max(0, currentIndex - 1);
+            setState({ [indexKey]: newIndex });
+          }
+          break;
+        case 'g':
+          const now = Date.now();
+          if (lastKeyPress.key === 'g' && (now - lastKeyPress.timestamp) < 500) {
+            if (items.length > 0) {
+              setState({ [indexKey]: 0 });
+            }
+            lastKeyPress = { key: null, timestamp: 0 };
+          } else {
+            lastKeyPress = { key: 'g', timestamp: now };
+          }
+          break;
+        case 'G':
+          if (items.length > 0) {
+            setState({ [indexKey]: items.length - 1 });
           }
           break;
         case 'Enter':
-          if (state.config.repos.length > 0 && state.selectedRepoIndex >= 0) {
-            const repo = state.config.repos[state.selectedRepoIndex];
-            const url = `https://github.com/${state.config.owner}/${repo}`;
-            window.open(url, '_blank', 'noopener,noreferrer');
-          }
-          break;
-        case 'i':
-          if (state.config.repos.length > 0 && state.selectedRepoIndex >= 0) {
-            const repo = state.config.repos[state.selectedRepoIndex];
-            toggleIgnoreForRepo(repo);
+          if (items.length > 0 && currentIndex >= 0) {
+            onEnter(items[currentIndex]);
           }
           break;
         default:
-          handled = false;
+          if (extraHandlers[event.key]) {
+            extraHandlers[event.key]();
+          } else {
+            handled = false;
+          }
       }
+      return handled;
+    };
+
+    // Repository navigation
+    if (showRepoLinks) {
+      const handled = handleNavigation(
+        state.config.repos,
+        state.selectedRepoIndex,
+        'selectedRepoIndex',
+        (repo) => {
+          const url = `https://github.com/${state.config.owner}/${repo}`;
+          window.open(url, '_blank', 'noopener,noreferrer');
+        },
+        {
+          'i': () => {
+            if (state.config.repos.length > 0 && state.selectedRepoIndex >= 0) {
+              const repo = state.config.repos[state.selectedRepoIndex];
+              toggleIgnoreForRepo(repo);
+            }
+          }
+        }
+      );
       if (handled) return;
     }
 
-    // PR navigation (when not in repo view)
+    // PR navigation
     if (!showRepoLinks) {
       const displayPRs = state.showRecentPRs
         ? state.recentPRs
@@ -703,31 +740,12 @@ const init = async () => {
             .filter(pr => state.showMasterPRs || (pr.baseRefName !== 'master' && pr.baseRefName !== 'main'))
             .filter(pr => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null));
 
-      let handled = true;
-      switch (event.key) {
-        case 'j':
-        case 'ArrowDown':
-          if (displayPRs.length > 0) {
-            const newIndex = state.selectedPrIndex < 0 ? 0 : Math.min(displayPRs.length - 1, state.selectedPrIndex + 1);
-            setState({ selectedPrIndex: newIndex });
-          }
-          break;
-        case 'k':
-        case 'ArrowUp':
-          if (displayPRs.length > 0) {
-            const newIndex = state.selectedPrIndex < 0 ? 0 : Math.max(0, state.selectedPrIndex - 1);
-            setState({ selectedPrIndex: newIndex });
-          }
-          break;
-        case 'Enter':
-          if (displayPRs.length > 0 && state.selectedPrIndex >= 0) {
-            const pr = displayPRs[state.selectedPrIndex];
-            window.open(pr.url, '_blank', 'noopener,noreferrer');
-          }
-          break;
-        default:
-          handled = false;
-      }
+      const handled = handleNavigation(
+        displayPRs,
+        state.selectedPrIndex,
+        'selectedPrIndex',
+        (pr) => window.open(pr.url, '_blank', 'noopener,noreferrer')
+      );
       if (handled) return;
     }
 
