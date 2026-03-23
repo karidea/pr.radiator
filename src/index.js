@@ -268,6 +268,47 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos) => {
   }
 };
 
+const refreshTeamRepos = async () => {
+  const { token, owner, team, ignoreRepos } = state.config;
+  if (!token || !owner || !team) {
+    console.warn('Cannot refresh repos: missing config');
+    return;
+  }
+
+  try {
+    setState({ isFetchingRepos: true });
+    startProgress();
+
+    console.log('🔄 Refreshing team repositories from GitHub...');
+
+    const rawRepos = await api.queryTeamRepos(token, owner, team);
+    const filteredRepos = await api.filterTeamRepos(token, owner, team, rawRepos);
+
+    localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
+
+    setState({
+      config: { ...state.config, repos: filteredRepos },
+      selectedRepoIndex: -1,
+    });
+
+    // Auto-refresh whichever view we're in
+    if (!state.showRepoLinks) {
+      if (state.showRecentPRs) {
+        await fetchRecentPRs(token, owner, filteredRepos, ignoreRepos);
+      } else {
+        await fetchOpenPRs(token, owner, filteredRepos, ignoreRepos);
+      }
+    }
+
+    console.log(`✅ Team repositories refreshed (${filteredRepos.length} repos)`);
+  } catch (error) {
+    console.error('Failed to refresh team repositories:', error);
+  } finally {
+    stopProgress();
+    setState({ isFetchingRepos: false });
+  }
+};
+
 
 const CommentDots = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M256 32C114.6 32 0 125.1 0 240c0 49.6 21.4 95 57 130.7C44.5 421.1 2.7 466 2.2 466.5c-2.2 2.3-2.8 5.7-1.5 8.7S4.8 480 8 480c66.3 0 116-31.8 140.6-51.4 32.7 12.3 69 19.4 107.4 19.4 141.4 0 256-93.1 256-208S397.4 32 256 32zM128 272c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32zm128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32zm128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32z" /></svg>`;
 const HourglassHalf = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 384 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M360 0H24C10.745 0 0 10.745 0 24v16c0 13.255 10.745 24 24 24 0 90.965 51.016 167.734 120.842 192C75.016 280.266 24 357.035 24 448c-13.255 0-24 10.745-24 24v16c0 13.255 10.745 24 24 24h336c13.255 0 24-10.745 24-24v-16c0-13.255-10.745-24-24-24 0-90.965-51.016-167.734-120.842-192C308.984 231.734 360 154.965 360 64c13.255 0 24-10.745 24-24V24c0-13.255-10.745-24-24-24zm-75.078 384H99.08c17.059-46.797 52.096-80 92.92-80 40.821 0 75.862 33.196 92.922 80zm.019-256H99.078C91.988 108.548 88 86.748 88 64h208c0 22.805-3.987 44.587-11.059 64z" /></svg>`;
@@ -426,6 +467,7 @@ const initialState = {
   selectedPrIndex: -1,
   isFetchingOpenPRs: false,
   isFetchingRecentPRs: false,
+  isFetchingRepos: false,
 };
 
 let state = { ...initialState };
@@ -821,6 +863,7 @@ const init = async () => {
         }
         setState({ selectedPrIndex: -1, selectedRepoIndex: -1 });
       },
+      R: () => refreshTeamRepos(),
       '?': () => {
         shortcutsOverlay.style.display = shortcutsOverlay.style.display === 'none' ? 'block' : 'none';
       }
