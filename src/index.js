@@ -1,7 +1,17 @@
 const sortByCreatedAt = (a, b) => a.createdAt.getTime() - b.createdAt.getTime();
 const byCommittedDateDesc = (a, b) => b.committedDate.getTime() - a.committedDate.getTime();
 
+const STORAGE_KEYS = {
+  token: 'PR_RADIATOR_TOKEN',
+  owner: 'PR_RADIATOR_OWNER',
+  team: 'PR_RADIATOR_TEAM',
+  teams: 'PR_RADIATOR_TEAMS',
+  repos: 'PR_RADIATOR_REPOS',
+  ignoreRepos: 'PR_RADIATOR_IGNORE_REPOS',
+};
+
 const progressBar = document.getElementById('progress-bar');
+const repoRefreshStatus = document.getElementById('repo-refresh-status');
 const repoView = document.getElementById('repo-view');
 const repoHeader = document.getElementById('repo-header');
 const repoList = document.getElementById('repo-list');
@@ -16,12 +26,140 @@ const recentPrList = document.getElementById('recent-pr-list');
 const settingsForm = document.getElementById('settings-form');
 const shortcutsOverlay = document.getElementById('shortcuts-overlay');
 const ownerInput = document.getElementById('owner');
-const teamInput = document.getElementById('team');
+const teamsInput = document.getElementById('teams');
 const tokenInput = document.getElementById('token');
 const configForm = document.getElementById('config-form');
 
+const parseStoredJSON = (key, fallback) => {
+  try {
+    const rawValue = localStorage.getItem(key);
+    return rawValue ? JSON.parse(rawValue) : fallback;
+  } catch (error) {
+    console.warn(`Failed to parse localStorage key ${key}`, error);
+    return fallback;
+  }
+};
+
+const dedupeStrings = (values) => [...new Set(values.filter(Boolean))];
+
+const parseTeamInput = (value) => dedupeStrings(
+  value
+    .split(',')
+    .map((slug) => slug.trim())
+    .filter(Boolean)
+);
+
+const normalizeConfiguredTeams = (storedTeams, legacyTeam) => {
+  const sourceTeams = Array.isArray(storedTeams) && storedTeams.length > 0
+    ? storedTeams
+    : legacyTeam
+      ? [legacyTeam]
+      : [];
+
+  return dedupeStrings(sourceTeams.map((team) => (
+    typeof team === 'string' ? team.trim() : team?.slug?.trim()
+  )));
+};
+
+const normalizeRepoMappings = (storedRepos, storedTeams, configuredTeams, legacyTeam, legacyRepos) => {
+  const teamsWithRepos = Array.isArray(storedTeams)
+    ? storedTeams.filter((team) => team && typeof team === 'object' && Array.isArray(team.repos))
+    : [];
+  const repoSource = Array.isArray(storedRepos) && storedRepos.some((entry) => entry && typeof entry === 'object' && 'slug' in entry)
+    ? storedRepos
+    : teamsWithRepos.length > 0
+      ? teamsWithRepos
+      : legacyTeam && Array.isArray(legacyRepos)
+        ? [{ slug: legacyTeam, repos: legacyRepos }]
+        : [];
+
+  const repoMap = new Map();
+  repoSource.forEach((entry) => {
+    const slug = typeof entry === 'string' ? entry.trim() : entry?.slug?.trim();
+    if (!slug) return;
+    repoMap.set(slug, dedupeStrings(Array.isArray(entry?.repos) ? entry.repos : []));
+  });
+
+  return configuredTeams.map((slug) => ({
+    slug,
+    repos: repoMap.get(slug) || [],
+  }));
+};
+
+const getAllReposFromMappings = (repoMappings) => dedupeStrings(
+  repoMappings.flatMap((team) => Array.isArray(team.repos) ? team.repos : [])
+);
+
+const getRepoTeamSlugs = (repoName) => state.config.repos
+  .filter((team) => team.repos.includes(repoName))
+  .map((team) => team.slug);
+
+const getVisibleTeamSlugs = (config = state.config, activeTeamSlug = state.activeTeamSlug) => activeTeamSlug
+  ? [activeTeamSlug]
+  : config.teams;
+
+const getVisibleRepos = (config = state.config, activeTeamSlug = state.activeTeamSlug) => getAllReposFromMappings(
+  config.repos.filter((team) => getVisibleTeamSlugs(config, activeTeamSlug).includes(team.slug))
+);
+
+const getAllConfiguredRepos = (config = state.config) => getAllReposFromMappings(config.repos);
+
+const getDisplayPRs = () => {
+  const sourcePRs = state.showRecentPRs ? state.recentPRs : state.PRs;
+  const visibleTeamSlugs = new Set(getVisibleTeamSlugs());
+  const ignoredRepos = new Set(state.config.ignoreRepos);
+  const hideDependabot = !state.showDependabotPRs;
+  const needsReviewOnly = state.showNeedsReviewPRs;
+
+  return sourcePRs.filter((pr) => {
+    if (!pr.teamSlugs.some((slug) => visibleTeamSlugs.has(slug))) return false;
+    if (ignoredRepos.has(pr.repository.name)) return false;
+    if (hideDependabot && pr.author.login === 'dependabot') return false;
+    if (needsReviewOnly && pr.reviewDecision !== 'REVIEW_REQUIRED' && pr.reviewDecision !== null) return false;
+    return true;
+  });
+};
+
+const getTeamScopeLabel = () => {
+  const { teams } = state.config;
+  if (teams.length === 0) return '';
+  if (!state.activeTeamSlug) {
+    return teams.length === 1 ? teams[0] : `all teams (${teams.length})`;
+  }
+  return `${state.activeTeamSlug} (1/${teams.length})`;
+};
+
+const shouldShowInlineTeamBadges = () => state.config.teams.length > 1 && !state.activeTeamSlug;
+
+const renderTeamBadges = (teamSlugs = []) => {
+  if (!shouldShowInlineTeamBadges()) return '';
+  if (!teamSlugs.length) return '';
+  const badges = teamSlugs
+    .map((slug) => `<span class="team-badge" title="Team ${slug}">${slug}</span>`)
+    .join('');
+  return `<span class="team-badges">${badges}</span>`;
+};
+
+const persistConfig = (config) => {
+  localStorage.setItem(STORAGE_KEYS.owner, config.owner);
+  localStorage.setItem(STORAGE_KEYS.token, config.token);
+  localStorage.setItem(STORAGE_KEYS.teams, JSON.stringify(config.teams));
+  localStorage.setItem(STORAGE_KEYS.repos, JSON.stringify(config.repos));
+  localStorage.setItem(STORAGE_KEYS.ignoreRepos, JSON.stringify(config.ignoreRepos));
+  localStorage.removeItem(STORAGE_KEYS.team);
+};
+
+const legacyTeam = localStorage.getItem(STORAGE_KEYS.team) || '';
+const storedRepos = parseStoredJSON(STORAGE_KEYS.repos, []);
+const legacyRepos = Array.isArray(storedRepos) && storedRepos.every((entry) => typeof entry === 'string')
+  ? storedRepos
+  : [];
+const storedTeams = parseStoredJSON(STORAGE_KEYS.teams, []);
+const initialTeams = normalizeConfiguredTeams(storedTeams, legacyTeam);
+const initialRepos = normalizeRepoMappings(storedRepos, storedTeams, initialTeams, legacyTeam, legacyRepos);
+
 const RepositoriesQuery = (owner, team, next) => {
-  const after = next ? `"${next}"`: 'null';
+  const after = next ? `"${next}"` : 'null';
 
   return `{organization(login: "${owner}") {team(slug: "${team}") {repositories(first: 100, after: ${after}) {totalCount pageInfo {endCursor hasNextPage} edges {permission node {name isArchived}}}}}}`;
 };
@@ -63,7 +201,6 @@ const recentCommitHistoryFragment = `
   }
 `;
 
-
 const innerOpenPRsQuery = `pullRequests(last: 15, states: OPEN) { nodes {title url createdAt baseRefName headRefOid isDraft number author { login } comments (first: 50) {nodes {createdAt author { login }}} reviews(first: 50) {nodes {state createdAt author { login }}} commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}}} reviewDecision }}`;
 
 const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
@@ -81,7 +218,6 @@ const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
     })
     .join(' ');
 
-  // For 'recent', put FRAGMENT FIRST, then the query body
   if (type === 'recent') {
     const fragmentPart = recentCommitHistoryFragment.replace('%s', sinceDateTime);
     return `
@@ -91,15 +227,17 @@ const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
         ${batchedRepos}
       }
     `;
-  } else {
-    return `query ${type}PRs { ${batchedRepos} }`;
   }
+
+  return `query ${type}PRs { ${batchedRepos} }`;
 };
 
 const api = {
   fetchBatchQueries: async (token, type, owner, repos, sinceDateTime) => {
-    const result = Array.from({ length: Math.ceil(repos.length / 4) },
-        (_, index) => repos.slice(index * 4, (index + 1) * 4) );
+    const result = Array.from(
+      { length: Math.ceil(repos.length / 4) },
+      (_, index) => repos.slice(index * 4, (index + 1) * 4)
+    );
 
     return Promise.all(result.map(async (reposChunk) => {
       const response = await fetch('https://api.github.com/graphql', {
@@ -128,8 +266,11 @@ const api = {
         throw new Error(`GraphQL request failed: ${response.status} ${response.statusText}`);
       }
       const result = await response.json();
+      const repositories = result?.data?.organization?.team?.repositories;
 
-      const repositories = result.data.organization.team.repositories;
+      if (!repositories) {
+        throw new Error(`Unable to load repositories for team ${team}`);
+      }
 
       repositories.edges.forEach((repo) => {
         if (repo.permission === 'ADMIN' && repo.node.isArchived === false) {
@@ -139,7 +280,7 @@ const api = {
       hasNextPage = repositories.pageInfo.hasNextPage;
       next = repositories.pageInfo.endCursor;
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
     return repoNames;
@@ -150,23 +291,19 @@ const api = {
     const semaphore = Array(concurrencyLimit).fill(Promise.resolve());
 
     const makeRequest = async (repoName) => {
-      try {
-        const response = await fetch(`https://api.github.com/repos/${owner}/${repoName}/teams`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!response.ok) {
-          throw new Error(`REST request failed: ${response.status} ${response.statusText}`);
-        }
-        const teams = await response.json();
+      const response = await fetch(`https://api.github.com/repos/${owner}/${repoName}/teams`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        throw new Error(`REST request failed: ${response.status} ${response.statusText}`);
+      }
+      const teams = await response.json();
 
-        for (const t of teams) {
-          if (t.slug === team && t.permission === 'admin') {
-            filteredRepos.push(repoName);
-            break;
-          }
+      for (const currentTeam of teams) {
+        if (currentTeam.slug === team && currentTeam.permission === 'admin') {
+          filteredRepos.push(repoName);
+          break;
         }
-      } catch (error) {
-        console.error(`Error fetching teams for repo ${repoName}:`, error);
       }
     };
 
@@ -180,7 +317,26 @@ const api = {
     await Promise.all(runRequests);
 
     return filteredRepos;
-  }
+  },
+};
+
+const decoratePullRequest = (pr, repoName) => ({
+  ...pr,
+  repository: { name: repoName },
+  teamSlugs: getRepoTeamSlugs(repoName),
+});
+
+const mergePullRequestCache = (existingPRs, fetchedPRs, targetRepos, sortFn) => {
+  const targetRepoSet = new Set(targetRepos);
+  const mergedByUrl = new Map();
+
+  existingPRs
+    .filter((pr) => !targetRepoSet.has(pr.repository.name))
+    .forEach((pr) => mergedByUrl.set(pr.url, pr));
+
+  fetchedPRs.forEach((pr) => mergedByUrl.set(pr.url, pr));
+
+  return [...mergedByUrl.values()].sort(sortFn);
 };
 
 const parseDatesInPR = (pr) => {
@@ -190,11 +346,18 @@ const parseDatesInPR = (pr) => {
   pr.comments?.nodes?.forEach((comment) => { comment.createdAt = new Date(comment.createdAt); });
 };
 
-const fetchRecentPRs = async (token, owner, repos, ignoreRepos) => {
+const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
+  const { merge = false } = options;
   try {
     setState({ isFetchingRecentPRs: true });
     startProgress();
-    const filteredRepos = repos.filter(repo => !ignoreRepos.includes(repo));
+    const filteredRepos = repos.filter((repo) => !ignoreRepos.includes(repo));
+
+    if (filteredRepos.length === 0) {
+      if (!merge) setState({ recentPRs: [] });
+      return;
+    }
+
     const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     const results = await api.fetchBatchQueries(token, 'recent', owner, filteredRepos, sinceTwoWeeksAgo);
     const refCommits = [];
@@ -214,16 +377,24 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos) => {
     });
 
     const recentPullRequests = [];
-    refCommits.forEach(ref => ref.target.history.nodes.forEach((commit) => (commit.parents.totalCount > 1) ? commit.associatedPullRequests.nodes.forEach((pr) => {
-      pr['committedDate'] = commit.committedDate;
-      recentPullRequests.push(pr);
-    }) : null));
-    const filteredRecentPRs = [...new Set(recentPullRequests.map(pr => pr.url))].map(url => recentPullRequests.find(pr => pr.url === url));
+    refCommits.forEach((ref) => ref.target.history.nodes.forEach((commit) => {
+      if (commit.parents.totalCount > 1) {
+        commit.associatedPullRequests.nodes.forEach((pr) => {
+          recentPullRequests.push(decoratePullRequest({ ...pr, committedDate: commit.committedDate }, pr.repository.name));
+        });
+      }
+    }));
+    const filteredRecentPRs = [...new Set(recentPullRequests.map((pr) => pr.url))]
+      .map((url) => recentPullRequests.find((pr) => pr.url === url));
 
     filteredRecentPRs.forEach(parseDatesInPR);
     const recentPRs = filteredRecentPRs.sort(byCommittedDateDesc);
 
-    setState({ recentPRs });
+    setState({
+      recentPRs: merge
+        ? mergePullRequestCache(state.recentPRs, recentPRs, filteredRepos, byCommittedDateDesc)
+        : recentPRs,
+    });
   } catch (error) {
     console.log('Failed to fetch recent PRs', error);
   } finally {
@@ -232,11 +403,17 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos) => {
   }
 };
 
-const fetchOpenPRs = async (token, owner, repos, ignoreRepos) => {
+const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
+  const { merge = false } = options;
   try {
     setState({ isFetchingOpenPRs: true });
     startProgress();
-    const filteredRepos = repos.filter(repo => !ignoreRepos.includes(repo));
+    const filteredRepos = repos.filter((repo) => !ignoreRepos.includes(repo));
+
+    if (filteredRepos.length === 0) {
+      if (!merge) setState({ PRs: [] });
+      return;
+    }
 
     const results = await api.fetchBatchQueries(token, 'open', owner, filteredRepos);
     const resultPRs = [];
@@ -246,20 +423,19 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos) => {
         const repoName = result.data[key].name;
         const pullRequests = result.data[key]?.pullRequests.nodes ?? [];
         if (pullRequests.length > 0) {
-          resultPRs.push(
-            ...pullRequests.map((pr) => ({
-              ...pr,
-              repository: { name: repoName }
-            }))
-          );
+          resultPRs.push(...pullRequests.map((pr) => decoratePullRequest(pr, repoName)));
         }
       });
     });
 
     resultPRs.forEach(parseDatesInPR);
-    const openPRs = resultPRs.sort(sortByCreatedAt).filter(pr => !pr.isDraft);
+    const openPRs = resultPRs.sort(sortByCreatedAt).filter((pr) => !pr.isDraft);
 
-    setState({ PRs: openPRs });
+    setState({
+      PRs: merge
+        ? mergePullRequestCache(state.PRs, openPRs, filteredRepos, sortByCreatedAt)
+        : openPRs,
+    });
   } catch (error) {
     console.log('Failed to fetch open PRs', error);
   } finally {
@@ -268,47 +444,80 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos) => {
   }
 };
 
-const refreshTeamRepos = async () => {
-  const { token, owner, team, ignoreRepos } = state.config;
-  if (!token || !owner || !team) {
-    console.warn('Cannot refresh repos: missing config');
+const refreshCurrentView = async (options = {}) => {
+  const { merge = Boolean(state.activeTeamSlug) } = options;
+  const config = options.configOverride || state.config;
+  const activeTeamSlug = options.activeTeamSlugOverride ?? state.activeTeamSlug;
+  const { token, owner, ignoreRepos } = config;
+  const repos = options.reposOverride || getVisibleRepos(config, activeTeamSlug);
+
+  if (!token || !owner) return;
+
+  if (state.showRepoLinks) {
+    render();
     return;
+  }
+
+  if (state.showRecentPRs) {
+    await fetchRecentPRs(token, owner, repos, ignoreRepos, { merge });
+    return;
+  }
+
+  await fetchOpenPRs(token, owner, repos, ignoreRepos, { merge });
+};
+
+const refreshAllTeamRepos = async (configOverride = state.config) => {
+  const { token, owner, teams } = configOverride;
+  if (!token || !owner || teams.length === 0) {
+    console.warn('Cannot refresh repos: missing config');
+    return configOverride;
   }
 
   try {
     setState({ isFetchingRepos: true });
     startProgress();
 
-    console.log('🔄 Refreshing team repositories from GitHub...');
+    console.log(`🔄 Refreshing repositories for ${teams.length} team${teams.length === 1 ? '' : 's'}...`);
 
-    const rawRepos = await api.queryTeamRepos(token, owner, team);
-    const filteredRepos = await api.filterTeamRepos(token, owner, team, rawRepos);
+    const results = await Promise.allSettled(teams.map(async (teamSlug) => {
+      const rawRepos = await api.queryTeamRepos(token, owner, teamSlug);
+      const filteredRepos = await api.filterTeamRepos(token, owner, teamSlug, rawRepos);
+      return { slug: teamSlug, repos: filteredRepos };
+    }));
 
-    localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
-
-    setState({
-      config: { ...state.config, repos: filteredRepos },
-      selectedRepoIndex: -1,
+    const updatedRepos = teams.map((teamSlug, index) => {
+      const result = results[index];
+      if (result.status === 'fulfilled') {
+        return result.value;
+      }
+      console.error(`Failed to refresh repos for team ${teamSlug}`, result.reason);
+      return configOverride.repos.find((entry) => entry.slug === teamSlug) || { slug: teamSlug, repos: [] };
     });
 
-    // Auto-refresh whichever view we're in
-    if (!state.showRepoLinks) {
-      if (state.showRecentPRs) {
-        await fetchRecentPRs(token, owner, filteredRepos, ignoreRepos);
-      } else {
-        await fetchOpenPRs(token, owner, filteredRepos, ignoreRepos);
-      }
-    }
+    const nextConfig = {
+      ...state.config,
+      ...configOverride,
+      teams: [...teams],
+      repos: updatedRepos,
+    };
 
-    console.log(`✅ Team repositories refreshed (${filteredRepos.length} repos)`);
+    persistConfig(nextConfig);
+    setState({
+      config: nextConfig,
+      selectedRepoIndex: -1,
+      selectedPrIndex: -1,
+    });
+
+    console.log(`✅ Team repositories refreshed (${getAllReposFromMappings(nextConfig.repos).length} repos total)`);
+    return nextConfig;
   } catch (error) {
     console.error('Failed to refresh team repositories:', error);
+    throw error;
   } finally {
     stopProgress();
     setState({ isFetchingRepos: false });
   }
 };
-
 
 const CommentDots = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M256 32C114.6 32 0 125.1 0 240c0 49.6 21.4 95 57 130.7C44.5 421.1 2.7 466 2.2 466.5c-2.2 2.3-2.8 5.7-1.5 8.7S4.8 480 8 480c66.3 0 116-31.8 140.6-51.4 32.7 12.3 69 19.4 107.4 19.4 141.4 0 256-93.1 256-208S397.4 32 256 32zM128 272c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32zm128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32zm128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32z" /></svg>`;
 const HourglassHalf = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 384 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M360 0H24C10.745 0 0 10.745 0 24v16c0 13.255 10.745 24 24 24 0 90.965 51.016 167.734 120.842 192C75.016 280.266 24 357.035 24 448c-13.255 0-24 10.745-24 24v16c0 13.255 10.745 24 24 24h336c13.255 0 24-10.745 24-24v-16c0-13.255-10.745-24-24-24 0-90.965-51.016-167.734-120.842-192C308.984 231.734 360 154.965 360 64c13.255 0 24-10.745 24-24V24c0-13.255-10.745-24-24-24zm-75.078 384H99.08c17.059-46.797 52.096-80 92.92-80 40.821 0 75.862 33.196 92.922 80zm.019-256H99.078C91.988 108.548 88 86.748 88 64h208c0 22.805-3.987 44.587-11.059 64z" /></svg>`;
@@ -322,11 +531,11 @@ const combineReviewsAndComments = (reviews, comments) => {
   const events = [];
 
   reviews.nodes.forEach((review) => {
-    const state = review.state === 'COMMENTED' ? 'COMMENTED' : review.state;
+    const currentState = review.state === 'COMMENTED' ? 'COMMENTED' : review.state;
     events.push({
       createdAt: review.createdAt,
       author: review.author.login,
-      state,
+      state: currentState,
     });
   });
 
@@ -342,11 +551,7 @@ const combineReviewsAndComments = (reviews, comments) => {
   let currentEvent = null;
 
   events.sort(sortByCreatedAt).forEach((curr) => {
-    if (
-      !currentEvent ||
-      curr.author !== currentEvent.author ||
-      curr.state !== currentEvent.state
-    ) {
+    if (!currentEvent || curr.author !== currentEvent.author || curr.state !== currentEvent.state) {
       if (currentEvent) compressedEvents.push(currentEvent);
       currentEvent = { ...curr, count: 1 };
     } else {
@@ -360,22 +565,22 @@ const combineReviewsAndComments = (reviews, comments) => {
 
 const getAgeString = (createdAt) => {
   const diffMs = Date.now() - createdAt.getTime();
-  if (diffMs < 3600000) return 'last-hour'; // 1 hour
-  if (diffMs < 7200000) return 'last-two-hours'; // 2 hours
-  if (diffMs < 86400000) return 'last-day'; // 1 day
-  if (diffMs < 604800000) return 'last-week'; // 1 week
+  if (diffMs < 3600000) return 'last-hour';
+  if (diffMs < 7200000) return 'last-two-hours';
+  if (diffMs < 86400000) return 'last-day';
+  if (diffMs < 604800000) return 'last-week';
   return 'over-week-old';
 };
 
 const getCommitState = (headRefOid, commits) => {
-  const node = commits.nodes.find((node) => node.commit.oid === headRefOid);
+  const node = commits.nodes.find((currentNode) => currentNode.commit.oid === headRefOid);
 
   const icons = {
-    'SUCCESS': Check(),
-    'PENDING': HourglassHalf(),
-    'FAILURE': Times(),
-    'EXPECTED': HourglassHalf(),
-    'ERROR': ExclamationTriangle()
+    SUCCESS: Check(),
+    PENDING: HourglassHalf(),
+    FAILURE: Times(),
+    EXPECTED: HourglassHalf(),
+    ERROR: ExclamationTriangle(),
   };
 
   const conclusion = node?.commit?.statusCheckRollup?.state || 'ERROR';
@@ -385,21 +590,24 @@ const getCommitState = (headRefOid, commits) => {
   return `<span class="${className}">${icon}</span>`;
 };
 
-const TimelineEvent = ({ count, author, createdAt, state }) => {
+const TimelineEvent = ({ count, author, createdAt, state: eventState }) => {
   const countBadge = (count ?? 1) > 1 ? `(${count})` : '';
   const authorWithCount = `${author}${countBadge}`;
   const formattedDate = createdAt.toLocaleString();
-  let tooltip = `${authorWithCount} ${state.toLowerCase()} at ${formattedDate}`;
+  let tooltip = `${authorWithCount} ${eventState.toLowerCase()} at ${formattedDate}`;
 
-  if (state === 'APPROVED') {
+  if (eventState === 'APPROVED') {
     return `<span class="event-group approved" title="${tooltip}">${authorWithCount}${Check()}</span>`;
-  } else if (state === 'CHANGES_REQUESTED') {
+  }
+  if (eventState === 'CHANGES_REQUESTED') {
     tooltip = `${authorWithCount} requested changes at ${formattedDate}`;
     return `<span class="event-group changes-requested" title="${tooltip}">${authorWithCount}${Times()}</span>`;
-  } else if (state === 'COMMENTED') {
+  }
+  if (eventState === 'COMMENTED') {
     tooltip = `${authorWithCount} commented at ${formattedDate}`;
     return `<span class="event-group commented" title="${tooltip}">${authorWithCount}${CommentDots()}</span>`;
-  } else if (state === 'DISMISSED') {
+  }
+  if (eventState === 'DISMISSED') {
     tooltip = `${authorWithCount} dismissed at ${formattedDate}`;
     return `<span class="event-group dismissed" title="${tooltip}">${authorWithCount}${Minus()}</span>`;
   }
@@ -423,15 +631,16 @@ const formatDistanceToNow = (date) => {
 };
 
 const renderPR = (pr, isRecent = true, showBranch = false, index = 0, isSelected = false) => {
-  const { number, title, url, repository } = pr;
+  const { number, title, url, repository, teamSlugs = [] } = pr;
   const dateKey = isRecent ? 'committedDate' : 'createdAt';
   const date = pr[dateKey];
-  const elapsedTimeStr = formatDistanceToNow(date, { addSuffix: true, includeSeconds: true });
+  const elapsedTimeStr = formatDistanceToNow(date);
   const id = `pr-time-${pr.url}`;
   const selectedClass = isSelected ? 'selected' : '';
+  const teamBadges = renderTeamBadges(teamSlugs);
 
   if (isRecent) {
-    return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}"><div class="pr-main-line"><span id="${id}" title="${date}">${elapsedTimeStr}</span> ${pr.author.login}&nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${number}</a>&nbsp;${title}</div></li>`;
+    return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}"><div class="pr-main-line"><span id="${id}" title="${date}">${elapsedTimeStr}</span> ${teamBadges}${pr.author.login}&nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${number}</a>&nbsp;${title}</div></li>`;
   }
 
   const { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, commits } = pr;
@@ -439,23 +648,25 @@ const renderPR = (pr, isRecent = true, showBranch = false, index = 0, isSelected
   const commitState = getCommitState(headRefOid, commits);
   const reviewState = reviews.nodes.length === 0 ? ExclamationCircle() : '';
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
-  const branch = showBranch ? baseRefName : '';
+  const branch = showBranch ? `${baseRefName} ` : '';
   const timestamp = `<span id="${id}" title="${date}">${elapsedTimeStr}</span>`;
   const ageClass = getAgeString(createdAt);
-  
-  const mainLine = `<div class="pr-main-line ${ageClass}">${timestamp} ${reviewState} ${commitState} ${branch} ${author} ${prLink} ${title}</div>`;
-  const eventLines = events.length > 0 ? `<div class="pr-event-lines">&nbsp;&nbsp;${events.map((event, index) => TimelineEvent({ ...event, key: index })).join('')}</div>` : '';
+
+  const mainLine = `<div class="pr-main-line ${ageClass}">${timestamp} ${teamBadges}${reviewState} ${commitState} ${branch}${author} ${prLink} ${title}</div>`;
+  const eventLines = events.length > 0
+    ? `<div class="pr-event-lines">&nbsp;&nbsp;${events.map((event, eventIndex) => TimelineEvent({ ...event, key: eventIndex })).join('')}</div>`
+    : '';
 
   return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}">${mainLine}${eventLines}</li>`;
 };
 
 const initialState = {
   config: {
-    token: localStorage.getItem('PR_RADIATOR_TOKEN') || '',
-    owner: localStorage.getItem('PR_RADIATOR_OWNER') || '',
-    team: localStorage.getItem('PR_RADIATOR_TEAM') || '',
-    repos: JSON.parse(localStorage.getItem('PR_RADIATOR_REPOS') || '[]'),
-    ignoreRepos: JSON.parse(localStorage.getItem('PR_RADIATOR_IGNORE_REPOS') || '[]'),
+    token: localStorage.getItem(STORAGE_KEYS.token) || '',
+    owner: localStorage.getItem(STORAGE_KEYS.owner) || '',
+    teams: initialTeams,
+    repos: initialRepos,
+    ignoreRepos: parseStoredJSON(STORAGE_KEYS.ignoreRepos, []),
   },
   PRs: [],
   recentPRs: [],
@@ -468,10 +679,10 @@ const initialState = {
   isFetchingOpenPRs: false,
   isFetchingRecentPRs: false,
   isFetchingRepos: false,
+  activeTeamSlug: '',
 };
 
 let state = { ...initialState };
-
 
 const startProgress = () => {
   if (progressBar) progressBar.classList.add('active');
@@ -486,8 +697,25 @@ const stopProgress = () => {
   }
 };
 
+const renderRepoRefreshStatus = () => {
+  if (!repoRefreshStatus) return;
+
+  if (!state.isFetchingRepos) {
+    repoRefreshStatus.textContent = '';
+    repoRefreshStatus.classList.remove('active');
+    repoRefreshStatus.classList.add('hidden');
+    return;
+  }
+
+  const teamCount = state.config.teams.length;
+  repoRefreshStatus.textContent = `Refreshing team repositories for ${teamCount} team${teamCount === 1 ? '' : 's'}...`;
+  repoRefreshStatus.classList.remove('hidden');
+  repoRefreshStatus.classList.add('active');
+};
+
 const setState = (updates) => {
   state = { ...state, ...updates };
+  renderRepoRefreshStatus();
   render();
 };
 
@@ -501,91 +729,120 @@ const toggleIgnoreForRepo = (repoName) => {
   } else {
     ignoreRepos.push(repoName);
   }
-  setState({ config: { ...state.config, ignoreRepos } });
+  const nextConfig = { ...state.config, ignoreRepos };
+  persistConfig(nextConfig);
+  setState({ config: nextConfig });
 };
 
-const onSubmit = (event) => {
-  event.preventDefault();
-  const owner = ownerInput.value;
-  const token = tokenInput.value;
-  const team = teamInput.value;
-  localStorage.setItem('PR_RADIATOR_OWNER', owner);
-  localStorage.setItem('PR_RADIATOR_TOKEN', token);
-  localStorage.setItem('PR_RADIATOR_TEAM', team);
-  setState({ config: { ...state.config, team, token, owner } });
+const openSettings = () => {
+  ownerInput.value = state.config.owner;
+  teamsInput.value = state.config.teams.join(', ');
+  tokenInput.value = state.config.token;
+  settingsForm.style.display = 'block';
+  repoView.classList.add('hidden');
+  prView.classList.add('hidden');
+  requestAnimationFrame(() => teamsInput.focus());
+};
 
-  if (state.config.token && state.config.owner && state.config.repos.length > 0) {
-    fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch((error) => {
-      console.error('Error fetching PRs after submit', error);
+const closeSettings = () => {
+  settingsForm.style.display = 'none';
+  render();
+};
+
+const onSubmit = async (event) => {
+  event.preventDefault();
+  const owner = ownerInput.value.trim();
+  const token = tokenInput.value.trim();
+  const teamSlugs = parseTeamInput(teamsInput.value);
+
+  if (teamSlugs.length === 0) {
+    console.warn('Please configure at least one team.');
+    return;
+  }
+
+  const previousRepos = new Map(state.config.repos.map((team) => [team.slug, team.repos]));
+  const repos = teamSlugs.map((slug) => ({
+    slug,
+    repos: previousRepos.get(slug) || [],
+  }));
+
+  const nextConfig = {
+    ...state.config,
+    owner,
+    token,
+    teams: teamSlugs,
+    repos,
+  };
+
+  persistConfig(nextConfig);
+  setState({
+    config: nextConfig,
+    activeTeamSlug: '',
+    selectedRepoIndex: -1,
+    selectedPrIndex: -1,
+  });
+
+  try {
+    const refreshedConfig = await refreshAllTeamRepos(nextConfig);
+    await refreshCurrentView({
+      configOverride: refreshedConfig,
+      activeTeamSlugOverride: '',
+      reposOverride: getAllConfiguredRepos(refreshedConfig),
+      merge: false,
     });
-  } else if (state.config.token && state.config.owner && state.config.team && state.config.repos.length === 0) {
-    startProgress();
-    render();
-    api.queryTeamRepos(token, owner, team)
-      .then(repos => api.filterTeamRepos(token, owner, team, repos))
-      .then(filteredRepos => {
-        localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
-        setState({ config: { ...state.config, repos: filteredRepos } });
-        render();
-        if (filteredRepos.length > 0) {
-          fetchOpenPRs(token, owner, filteredRepos, state.config.ignoreRepos).catch(error => {
-            console.error('Error fetching PRs after repos', error);
-            stopProgress();
-          });
-        } else {
-          stopProgress();
-        }
-      })
-      .catch(error => {
-        console.error('Error fetching repos after submit', error);
-        stopProgress();
-        render();
-      });
+    closeSettings();
+  } catch (error) {
+    console.error('Error updating configuration', error);
   }
 };
 
 const render = () => {
-  const { config: { token, owner, team, repos }, selectedRepoIndex, selectedPrIndex, showRepoLinks } = state;
+  const {
+    config: { token, owner, teams, repos },
+    selectedRepoIndex,
+    selectedPrIndex,
+    showRepoLinks,
+  } = state;
+  const visibleRepos = getVisibleRepos();
+  const scopeLabel = getTeamScopeLabel();
   document.title = 'PR Radiator';
 
-  if (!token || !owner || !team) {
-    settingsForm.style.display = 'block';
+  if (!token || !owner || teams.length === 0) {
+    openSettings();
     repoView.classList.add('hidden');
     prView.classList.add('hidden');
     return;
   }
   settingsForm.style.display = 'none';
 
-  if (repos.length === 0) {
+  if (getAllReposFromMappings(repos).length === 0) {
     repoView.classList.add('hidden');
-    openPrHeader.innerHTML = `<div>Fetching ${team} team repositories...</div>`;
+    const loadingMessage = state.isFetchingRepos
+      ? 'Fetching configured team repositories...'
+      : 'No repositories loaded yet. Press R to refresh team repositories.';
+    openPrHeader.innerHTML = `<div>${loadingMessage}</div>`;
     openPrList.innerHTML = '';
     openPrView.classList.remove('hidden');
+    recentPrView.classList.add('hidden');
     return;
   }
 
   if (showRepoLinks) {
     repoView.classList.remove('hidden');
     prView.classList.add('hidden');
-    
-    const repoSectionHeader = (title, badgeContent) => {
-      const badgeEl = badgeContent !== null ? `(${badgeContent})` : '';
-      return `${title} ${badgeEl}`;
-    };
-    
-    const headerHtml = repoSectionHeader('Repositories', repos.length);
-    repoHeader.innerHTML = headerHtml;
-    
-    const listHtml = repos.map((repo, index) => {
+
+    const badgeEl = `(${visibleRepos.length})`;
+    const scopeEl = scopeLabel ? `<span class="team-filter-summary">${scopeLabel}</span>` : '';
+    repoHeader.innerHTML = `Repositories ${badgeEl}${scopeEl}`;
+
+    repoList.innerHTML = visibleRepos.map((repo, index) => {
       const isIgnored = isRepoIgnored(repo);
       const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
-      return `<li class="${classes}" data-index="${index}" data-repo="${repo}"><a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener noreferrer">${repo}</a></li>`;
+      return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${renderTeamBadges(getRepoTeamSlugs(repo))}<a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener noreferrer">${repo}</a></li>`;
     }).join('');
-    
-    repoList.innerHTML = listHtml;
-    repoNavHint.innerHTML = 'j/k to navigate · enter to open · i to toggle ignore';
-    
-    // Focus and scroll to selected item
+
+    repoNavHint.innerHTML = 'j/k to navigate · enter to open · i to toggle ignore · t to cycle team focus';
+
     if (selectedRepoIndex >= 0) {
       repoList.focus();
       setTimeout(() => {
@@ -595,112 +852,133 @@ const render = () => {
         }
       }, 0);
     }
-  } else {
-    repoView.classList.add('hidden');
-    prView.classList.remove('hidden');
-    
-    const sectionHeader = (title, badgeContent = null, prState = '') => {
-      const stateLabel = prState ? `<span class="pr-state">${prState.toLowerCase()}</span>` : '';
-      const badgeEl = badgeContent !== null ? `(${badgeContent} ${stateLabel})` : '';
-      return `<div class="section-header">${title} ${badgeEl}</div>`;
-    };
+    return;
+  }
 
-    if (state.showRecentPRs) {
-      const displayPRs = state.recentPRs;
-      const count = displayPRs.length;
-      const badge = state.isFetchingRecentPRs
-        ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
-        : count;
-      recentPrHeader.innerHTML = sectionHeader('Pull requests', badge, 'MERGED');
-      recentPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, true, false, index, index === selectedPrIndex)).join('');
-      document.title = `(${count}) PR Radiator`;
-      
-      recentPrView.classList.remove('hidden');
-      openPrView.classList.add('hidden');
-      
-      // Focus and scroll to selected item
-      if (selectedPrIndex >= 0) {
-        recentPrList.focus();
-        setTimeout(() => {
-          const selectedItem = recentPrList.querySelector('.pr-item.selected');
-          if (selectedItem) {
-            selectedItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-          }
-        }, 0);
-      }
-    } else {
-      const displayPRs = state.PRs
-        .filter(pr => state.showDependabotPRs || pr.author.login !== 'dependabot')
-        .filter(pr => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null));
-      const count = displayPRs.length;
-      const badge = state.isFetchingOpenPRs
-        ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
-        : count;
-      openPrHeader.innerHTML = sectionHeader('Pull requests', badge, 'OPEN');
-      openPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, false, true, index, index === selectedPrIndex)).join('');
-      document.title = `(${count}) PR Radiator`;
-      
-      openPrView.classList.remove('hidden');
-      recentPrView.classList.add('hidden');
-      
-      // Focus and scroll to selected item
-      if (selectedPrIndex >= 0) {
-        openPrList.focus();
-        setTimeout(() => {
-          const selectedItem = openPrList.querySelector('.pr-item.selected');
-          if (selectedItem) {
-            selectedItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-          }
-        }, 0);
-      }
+  repoView.classList.add('hidden');
+  prView.classList.remove('hidden');
+
+  const sectionHeader = (title, badgeContent = null, prState = '') => {
+    const stateLabel = prState ? `<span class="pr-state">${prState.toLowerCase()}</span>` : '';
+    const badgeEl = badgeContent !== null ? `(${badgeContent} ${stateLabel})` : '';
+    const scopeEl = scopeLabel ? `<span class="team-filter-summary">${scopeLabel}</span>` : '';
+    return `<div class="section-header">${title} ${badgeEl}${scopeEl}</div>`;
+  };
+
+  if (state.showRecentPRs) {
+    const displayPRs = getDisplayPRs();
+    const count = displayPRs.length;
+    const badge = state.isFetchingRecentPRs
+      ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
+      : count;
+    recentPrHeader.innerHTML = sectionHeader('Pull requests', badge, 'MERGED');
+    recentPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, true, false, index, index === selectedPrIndex)).join('');
+    document.title = `(${count}) PR Radiator`;
+
+    recentPrView.classList.remove('hidden');
+    openPrView.classList.add('hidden');
+
+    if (selectedPrIndex >= 0) {
+      recentPrList.focus();
+      setTimeout(() => {
+        const selectedItem = recentPrList.querySelector('.pr-item.selected');
+        if (selectedItem) {
+          selectedItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }, 0);
     }
+    return;
+  }
+
+  const displayPRs = getDisplayPRs();
+  const count = displayPRs.length;
+  const badge = state.isFetchingOpenPRs
+    ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
+    : count;
+  openPrHeader.innerHTML = sectionHeader('Pull requests', badge, 'OPEN');
+  openPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, false, true, index, index === selectedPrIndex)).join('');
+  document.title = `(${count}) PR Radiator`;
+
+  openPrView.classList.remove('hidden');
+  recentPrView.classList.add('hidden');
+
+  if (selectedPrIndex >= 0) {
+    openPrList.focus();
+    setTimeout(() => {
+      const selectedItem = openPrList.querySelector('.pr-item.selected');
+      if (selectedItem) {
+        selectedItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 0);
   }
 };
 
 const useInterval = (callback, delay) => {
-  let savedCallback = callback;
   let id;
 
-  const tick = () => savedCallback();
-
   if (delay !== null) {
-    id = setInterval(tick, delay);
+    id = setInterval(() => callback(), delay);
     return () => clearInterval(id);
   }
+
+  return undefined;
+};
+
+const cycleActiveTeam = () => {
+  const teamSlugs = state.config.teams;
+  if (teamSlugs.length <= 1) return false;
+
+  const currentIndex = state.activeTeamSlug ? teamSlugs.indexOf(state.activeTeamSlug) : -1;
+  const nextActiveTeam = currentIndex >= teamSlugs.length - 1 ? '' : teamSlugs[currentIndex + 1];
+
+  setState({
+    activeTeamSlug: nextActiveTeam,
+    selectedRepoIndex: -1,
+    selectedPrIndex: -1,
+  });
+  return true;
 };
 
 const init = async () => {
-  const { config: { token, owner, team, repos, ignoreRepos } } = state;
-  if (token && owner && repos.length > 0) {
-    await fetchOpenPRs(token, owner, repos, ignoreRepos);
+  if (state.config.teams.length > 0 && !localStorage.getItem(STORAGE_KEYS.teams)) {
+    persistConfig(state.config);
+  }
+
+  if (state.config.token && state.config.owner && getAllReposFromMappings(state.config.repos).length > 0) {
+    await fetchOpenPRs(state.config.token, state.config.owner, getVisibleRepos(), state.config.ignoreRepos);
   }
 
   useInterval(() => {
-    if (token && owner && repos.length > 0) {
-      fetchOpenPRs(token, owner, repos, ignoreRepos).catch((error) => {
-        console.error('Error in fetchOpenPRs on interval', error);
+    const repos = getVisibleRepos();
+    if (state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs) {
+      refreshCurrentView().catch((error) => {
+        console.error('Error refreshing PRs on interval', error);
       });
     }
-  }, 300000); // five minutes
+  }, 300000);
 
   if (!settingsForm.hasAttribute('data-initialized')) {
-    ownerInput.value = owner;
-    teamInput.value = team;
-    tokenInput.value = token;
+    ownerInput.value = state.config.owner;
+    teamsInput.value = state.config.teams.join(', ');
+    tokenInput.value = state.config.token;
 
     configForm.addEventListener('submit', onSubmit);
-    settingsForm.setAttribute('data-initialized', 'true');  // Prevent duplicate setup
+    settingsForm.setAttribute('data-initialized', 'true');
   }
 
-  // Track last key press for 'gg' detection
   let lastKeyPress = { key: null, timestamp: 0 };
 
   document.addEventListener('keydown', (event) => {
-    if (settingsForm.style.display === 'block' || document.activeElement.tagName === 'INPUT') return;
+    if (settingsForm.style.display === 'block') {
+      if (event.key === 'Escape') {
+        closeSettings();
+      }
+      return;
+    }
+    if (document.activeElement.tagName === 'INPUT') return;
 
     const { showRepoLinks } = state;
 
-    // Unified navigation handler
     const handleNavigation = (items, currentIndex, indexKey, onEnter, extraHandlers = {}) => {
       let handled = true;
       switch (event.key) {
@@ -718,7 +996,7 @@ const init = async () => {
             setState({ [indexKey]: newIndex });
           }
           break;
-        case 'g':
+        case 'g': {
           const now = Date.now();
           if (lastKeyPress.key === 'g' && (now - lastKeyPress.timestamp) < 500) {
             if (items.length > 0) {
@@ -729,6 +1007,7 @@ const init = async () => {
             lastKeyPress = { key: 'g', timestamp: now };
           }
           break;
+        }
         case 'G':
           if (items.length > 0) {
             setState({ [indexKey]: items.length - 1 });
@@ -749,10 +1028,10 @@ const init = async () => {
       return handled;
     };
 
-    // Repository navigation
     if (showRepoLinks) {
+      const visibleRepos = getVisibleRepos();
       const handled = handleNavigation(
-        state.config.repos,
+        visibleRepos,
         state.selectedRepoIndex,
         'selectedRepoIndex',
         (repo) => {
@@ -760,25 +1039,19 @@ const init = async () => {
           window.open(url, '_blank', 'noopener,noreferrer');
         },
         {
-          'i': () => {
-            if (state.config.repos.length > 0 && state.selectedRepoIndex >= 0) {
-              const repo = state.config.repos[state.selectedRepoIndex];
+          i: () => {
+            if (visibleRepos.length > 0 && state.selectedRepoIndex >= 0) {
+              const repo = visibleRepos[state.selectedRepoIndex];
               toggleIgnoreForRepo(repo);
             }
-          }
+          },
         }
       );
       if (handled) return;
     }
 
-    // PR navigation
     if (!showRepoLinks) {
-      const displayPRs = state.showRecentPRs
-        ? state.recentPRs
-        : state.PRs
-            .filter(pr => state.showDependabotPRs || pr.author.login !== 'dependabot')
-            .filter(pr => !state.showNeedsReviewPRs || (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null));
-
+      const displayPRs = getDisplayPRs();
       const handled = handleNavigation(
         displayPRs,
         state.selectedPrIndex,
@@ -788,107 +1061,99 @@ const init = async () => {
       if (handled) return;
     }
 
-    // Global handlers
     const handlers = {
       o: () => {
-        // Open PRs view
         setState({
           showRecentPRs: false,
           showRepoLinks: false,
           selectedRepoIndex: -1,
           selectedPrIndex: -1,
         });
-        if (state.config.token && state.config.owner && state.config.repos.length > 0) {
-          fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-        }
+        refreshCurrentView().catch((error) => {
+          console.error('Error refreshing open PRs', error);
+        });
       },
       m: () => {
-        // Merged PRs view - toggle back to open if currently viewing merged
-        if (state.showRecentPRs && !state.showRepoLinks) {
-          // Currently in merged view, go back to open
-          setState({
-            showRecentPRs: false,
-            showRepoLinks: false,
-            selectedRepoIndex: -1,
-            selectedPrIndex: -1,
-          });
-          if (state.config.token && state.config.owner && state.config.repos.length > 0) {
-            fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-          }
-        } else {
-          // Go to merged view
-          setState({
-            showRecentPRs: true,
-            showRepoLinks: false,
-            selectedRepoIndex: -1,
-            selectedPrIndex: -1,
-          });
-          if (state.config.token && state.config.owner && state.config.repos.length > 0) {
-            fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-          }
-        }
+        const showRecentPRs = !state.showRecentPRs || state.showRepoLinks;
+        setState({
+          showRecentPRs,
+          showRepoLinks: false,
+          selectedRepoIndex: -1,
+          selectedPrIndex: -1,
+        });
+        refreshCurrentView().catch((error) => {
+          console.error('Error refreshing merged PRs', error);
+        });
       },
       l: () => {
-        // Repo links view - toggle back to open if currently viewing repos
         if (state.showRepoLinks) {
-          // Currently in repo view, go back to open
-          localStorage.setItem('PR_RADIATOR_IGNORE_REPOS', JSON.stringify(state.config.ignoreRepos));
+          persistConfig(state.config);
           setState({
             showRepoLinks: false,
             showRecentPRs: false,
             selectedRepoIndex: -1,
             selectedPrIndex: -1,
           });
-          if (state.config.token && state.config.owner && state.config.repos.length > 0) {
-            fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-          }
-        } else {
-          // Go to repo view
-          setState({
-            showRepoLinks: true,
-            selectedRepoIndex: -1,
-            selectedPrIndex: -1,
+          refreshCurrentView().catch((error) => {
+            console.error('Error refreshing PRs after repo view', error);
           });
+          return;
         }
+
+        setState({
+          showRepoLinks: true,
+          selectedRepoIndex: -1,
+          selectedPrIndex: -1,
+        });
       },
-      d: () => setState({ showDependabotPRs: !state.showDependabotPRs }),
-      n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs }),
+      d: () => setState({ showDependabotPRs: !state.showDependabotPRs, selectedPrIndex: -1 }),
+      n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs, selectedPrIndex: -1 }),
       r: () => {
-        if (state.config.token && state.config.owner && state.config.repos.length > 0) {
-          if (state.showRecentPRs) {
-            fetchRecentPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-          } else if (!state.showRepoLinks) {
-            fetchOpenPRs(state.config.token, state.config.owner, state.config.repos, state.config.ignoreRepos).catch(console.error);
-          }
-        }
         setState({ selectedPrIndex: -1, selectedRepoIndex: -1 });
+        refreshCurrentView().catch((error) => {
+          console.error('Error refreshing current view', error);
+        });
       },
-      R: () => refreshTeamRepos(),
+      R: () => {
+        refreshAllTeamRepos()
+          .then((config) => refreshCurrentView({ configOverride: config, reposOverride: getAllConfiguredRepos(config), merge: false }))
+          .catch((error) => {
+            console.error('Error refreshing team repositories', error);
+          });
+      },
+      t: () => {
+        if (!cycleActiveTeam()) return;
+        refreshCurrentView({ reposOverride: getAllConfiguredRepos(), merge: false }).catch((error) => {
+          console.error('Error refreshing after cycling team filter', error);
+        });
+      },
+      c: () => openSettings(),
       '?': () => {
         shortcutsOverlay.style.display = shortcutsOverlay.style.display === 'none' ? 'block' : 'none';
-      }
+      },
     };
 
     if (handlers[event.key]) handlers[event.key]();
   });
 
-  if (token && owner && team && repos.length === 0) {
+  if (state.config.token && state.config.owner && state.config.teams.length > 0 && getAllReposFromMappings(state.config.repos).length === 0) {
     try {
-      startProgress();
-      const reposList = await api.queryTeamRepos(token, owner, team);
-      const filteredRepos = await api.filterTeamRepos(token, owner, team, reposList);
-      localStorage.setItem('PR_RADIATOR_REPOS', JSON.stringify(filteredRepos));
-      setState({ config: { ...state.config, repos: filteredRepos } });
+      const refreshedConfig = await refreshAllTeamRepos();
+      await refreshCurrentView({
+        configOverride: refreshedConfig,
+        reposOverride: getAllConfiguredRepos(refreshedConfig),
+        merge: false,
+      });
     } catch (error) {
-      console.error('Error in getTeamRepos', error);
-      stopProgress();
+      console.error('Error loading team repositories', error);
     }
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && token && owner && repos.length > 0 && !state.isFetchingOpenPRs) {
-      fetchOpenPRs(token, owner, repos, ignoreRepos).catch((error) => {
-        console.error('Error in fetchOpenPRs on tab focus', error);
+    const repos = getVisibleRepos();
+    if (document.visibilityState === 'visible' && state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs) {
+      refreshCurrentView().catch((error) => {
+        console.error('Error refreshing PRs on tab focus', error);
       });
     }
   });

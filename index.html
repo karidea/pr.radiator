@@ -9,6 +9,7 @@
 </head>
 <body>
   <div id="progress-bar"></div>
+  <div id="repo-refresh-status" class="repo-refresh-status hidden" aria-live="polite"></div>
   <div id="repo-view" class="view hidden">
     <div id="repo-header" class="section-header"></div>
     <ul id="repo-list" class="repo-list" tabindex="-1">
@@ -29,8 +30,8 @@
     <form id="config-form">
       <label for="owner">GitHub Organization:</label>
       <input type="text" id="owner" name="owner" required>
-      <label for="team">Team Slug:</label>
-      <input type="text" id="team" name="team" required>
+      <label for="teams">Team Slugs (comma-separated):</label>
+      <input type="text" id="teams" name="teams" placeholder="platform, design-systems, developer-experience" required>
       <label for="token">Personal Access Token:</label>
       <input type="password" id="token" name="token" required>
       <input type="submit" value="Save Settings">
@@ -50,8 +51,11 @@
         <li><strong>i</strong>: Toggle ignore (repo view)</li>
         <li><strong>d</strong>: Toggle Dependabot PRs</li>
         <li><strong>n</strong>: Toggle Needs Review</li>
-        <li><strong>r</strong>: Refresh</li>
+        <li><strong>r</strong>: Refresh the current view</li>
         <li><strong>R</strong>: Refresh team repositories</li>
+        <li><strong>t</strong>: Cycle team focus</li>
+        <li><strong>c</strong>: Edit configuration</li>
+        <li><strong>Esc</strong>: Close configuration</li>
         <li><strong>?</strong>: Toggle this help</li>
       </ul>
     </div>
