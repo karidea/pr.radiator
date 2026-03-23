@@ -285,39 +285,6 @@ const api = {
 
     return repoNames;
   },
-  filterTeamRepos: async (token, owner, team, repos) => {
-    const filteredRepos = [];
-    const concurrencyLimit = 20;
-    const semaphore = Array(concurrencyLimit).fill(Promise.resolve());
-
-    const makeRequest = async (repoName) => {
-      const response = await fetch(`https://api.github.com/repos/${owner}/${repoName}/teams`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) {
-        throw new Error(`REST request failed: ${response.status} ${response.statusText}`);
-      }
-      const teams = await response.json();
-
-      for (const currentTeam of teams) {
-        if (currentTeam.slug === team && currentTeam.permission === 'admin') {
-          filteredRepos.push(repoName);
-          break;
-        }
-      }
-    };
-
-    const runRequests = repos.map((repoName, index) => {
-      const request = () => makeRequest(repoName);
-      const wrappedRequest = semaphore[index % concurrencyLimit].then(request);
-      semaphore[index % concurrencyLimit] = wrappedRequest;
-      return wrappedRequest;
-    });
-
-    await Promise.all(runRequests);
-
-    return filteredRepos;
-  },
 };
 
 const decoratePullRequest = (pr, repoName) => ({
@@ -480,9 +447,8 @@ const refreshAllTeamRepos = async (configOverride = state.config) => {
     console.log(`🔄 Refreshing repositories for ${teams.length} team${teams.length === 1 ? '' : 's'}...`);
 
     const results = await Promise.allSettled(teams.map(async (teamSlug) => {
-      const rawRepos = await api.queryTeamRepos(token, owner, teamSlug);
-      const filteredRepos = await api.filterTeamRepos(token, owner, teamSlug, rawRepos);
-      return { slug: teamSlug, repos: filteredRepos };
+      const repos = await api.queryTeamRepos(token, owner, teamSlug);
+      return { slug: teamSlug, repos };
     }));
 
     const updatedRepos = teams.map((teamSlug, index) => {
