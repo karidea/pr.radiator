@@ -27,6 +27,7 @@ const ownerInput = document.getElementById('owner');
 const teamsInput = document.getElementById('teams');
 const tokenInput = document.getElementById('token');
 const configForm = document.getElementById('config-form');
+const applyConfigButton = document.getElementById('apply-config');
 
 const parseStoredJSON = (key, fallback) => {
   try {
@@ -740,8 +741,7 @@ const updateShortcutsOverlayLayout = () => {
   document.body.style.setProperty('--shortcuts-overlay-height', `${shortcutsOverlay.offsetHeight}px`);
 };
 
-const onSubmit = async (event) => {
-  event.preventDefault();
+const applyConfig = async () => {
   const owner = ownerInput.value.trim();
   const token = tokenInput.value.trim();
   const teamSlugs = parseTeamInput(teamsInput.value);
@@ -951,7 +951,20 @@ const init = async () => {
     teamsInput.value = state.config.teams.join(', ');
     tokenInput.value = state.config.token;
 
-    configForm.addEventListener('submit', onSubmit);
+    applyConfigButton.addEventListener('click', () => {
+      applyConfig().catch((error) => {
+        console.error('Error applying configuration', error);
+      });
+    });
+    [ownerInput, teamsInput, tokenInput].forEach((input) => {
+      input.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        applyConfig().catch((error) => {
+          console.error('Error applying configuration', error);
+        });
+      });
+    });
     settingsForm.setAttribute('data-initialized', 'true');
   }
 
@@ -1036,7 +1049,10 @@ const init = async () => {
           },
         }
       );
-      if (handled) return;
+      if (handled) {
+        event.preventDefault();
+        return;
+      }
     }
 
     if (!showRepoLinks) {
@@ -1047,7 +1063,10 @@ const init = async () => {
         'selectedPrIndex',
         (pr) => window.open(pr.url, '_blank', 'noopener,noreferrer')
       );
-      if (handled) return;
+      if (handled) {
+        event.preventDefault();
+        return;
+      }
     }
 
     const handlers = {
@@ -1120,7 +1139,10 @@ const init = async () => {
       },
     };
 
-    if (handlers[event.key]) handlers[event.key]();
+    if (handlers[event.key]) {
+      event.preventDefault();
+      handlers[event.key]();
+    }
   });
 
   if (state.config.token && state.config.owner && state.config.teams.length > 0 && getAllReposFromMappings(state.config.repos).length === 0) {
