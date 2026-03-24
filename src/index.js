@@ -39,6 +39,7 @@ const parseStoredJSON = (key, fallback) => {
 };
 
 const dedupeStrings = (values) => [...new Set(values.filter(Boolean))];
+const getActorLogin = (actor, fallback = 'unknown') => actor?.login || fallback;
 
 const parseTeamInput = (value) => dedupeStrings(
   value
@@ -80,7 +81,7 @@ const getDisplayPRs = () => {
   return sourcePRs.filter((pr) => {
     if (!pr.teamSlugs.some((slug) => visibleTeamSlugs.has(slug))) return false;
     if (ignoredRepos.has(pr.repository.name)) return false;
-    if (hideDependabot && pr.author.login === 'dependabot') return false;
+    if (hideDependabot && getActorLogin(pr.author, '') === 'dependabot') return false;
     if (needsReviewOnly && pr.reviewDecision !== 'REVIEW_REQUIRED' && pr.reviewDecision !== null) return false;
     return true;
   });
@@ -473,7 +474,7 @@ const combineReviewsAndComments = (reviews, comments) => {
     const currentState = review.state === 'COMMENTED' ? 'COMMENTED' : review.state;
     events.push({
       createdAt: review.createdAt,
-      author: review.author.login,
+      author: getActorLogin(review.author),
       state: currentState,
     });
   });
@@ -481,7 +482,7 @@ const combineReviewsAndComments = (reviews, comments) => {
   comments.nodes.forEach((comment) => {
     events.push({
       createdAt: comment.createdAt,
-      author: comment.author.login,
+      author: getActorLogin(comment.author),
       state: 'COMMENTED',
     });
   });
@@ -609,14 +610,15 @@ const renderPR = (pr, isRecent = true, showBranch = false, index = 0, isSelected
   if (isRecent) {
     const mainContent = joinInlineParts([
       teamBadges,
-      pr.author.login,
+      getActorLogin(pr.author),
       `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${number}</a>`,
       title,
     ]);
     return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}"><div class="pr-main-line">${timestamp} ${mainContent}</div></li>`;
   }
 
-  const { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, commits } = pr;
+  const { createdAt, reviews, comments, baseRefName, headRefOid, commits } = pr;
+  const author = getActorLogin(pr.author);
   const events = combineReviewsAndComments(reviews, comments);
   const commitState = getCommitState(headRefOid, commits);
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
