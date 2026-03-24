@@ -728,6 +728,18 @@ const closeSettings = () => {
   render();
 };
 
+const updateShortcutsOverlayLayout = () => {
+  const isVisible = shortcutsOverlay.style.display !== 'none';
+  document.body.classList.toggle('shortcuts-open', isVisible);
+
+  if (!isVisible) {
+    document.body.style.removeProperty('--shortcuts-overlay-height');
+    return;
+  }
+
+  document.body.style.setProperty('--shortcuts-overlay-height', `${shortcutsOverlay.offsetHeight}px`);
+};
+
 const onSubmit = async (event) => {
   event.preventDefault();
   const owner = ownerInput.value.trim();
@@ -843,7 +855,7 @@ const render = () => {
       isNeedsReviewFilterActive() ? 'awaiting review' : '',
     ]);
     const badgeEl = badgeContent !== null ? `(${badgeContent})` : '';
-    return `<div class="section-header">${title} ${badgeEl}${summaryEl ? ` ${summaryEl}` : ''}</div>`;
+    return `${title} ${badgeEl}${summaryEl ? ` ${summaryEl}` : ''}`;
   };
 
   if (state.showRecentPRs) {
@@ -1104,6 +1116,7 @@ const init = async () => {
       c: () => openSettings(),
       '?': () => {
         shortcutsOverlay.style.display = shortcutsOverlay.style.display === 'none' ? 'block' : 'none';
+        updateShortcutsOverlayLayout();
       },
     };
 
