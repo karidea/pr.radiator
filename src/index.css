@@ -322,6 +322,13 @@ a {
   display: block;
 }
 
+.pr-age {
+  display: inline-block;
+  width: 4ch;
+  color: #8f9aa7;
+  text-align: right;
+}
+
 .pr-event-lines {
   padding: 0 4px;
 }
@@ -330,7 +337,6 @@ a {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-right: 6px;
   vertical-align: middle;
 }
 
@@ -362,13 +368,9 @@ a {
 }
 
 .section-header .pr-state,
-.section-header .team-filter-summary {
+.section-header .view-summary {
   color: #8a8a6f;
   font-weight: 400;
-}
-
-.section-header .team-filter-summary {
-  margin-left: 8px;
 }
 
 .section-header .fetching-spinner {

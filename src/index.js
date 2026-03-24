@@ -461,8 +461,6 @@ const Minus = () => `<svg stroke="currentColor" fill="currentColor" stroke-width
 const Times = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 352 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M242.72 256l100.07-100.07c12.28-12.28 12.28-32.19 0-44.48l-22.24-22.24c-12.28-12.28-32.19-12.28-44.48 0L176 189.28 75.93 89.21c-12.28-12.28-32.19-12.28-44.48 0L9.21 111.45c-12.28 12.28-12.28 32.19 0 44.48L109.28 256 9.21 356.07c-12.28 12.28-12.28 32.19 0 44.48l22.24 22.24c12.28 12.28 32.2 12.28 44.48 0L176 322.72l100.07 100.07c12.28 12.28 32.2 12.28 44.48 0l22.24-22.24c12.28-12.28 12.28-32.19 0-44.48L242.72 256z" /></svg>`;
 const Check = () => `<svg stroke="currentColor" fill="currentColor" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M173.898 439.404l-166.4-166.4c-9.997-9.997-9.997-26.206 0-36.204l36.203-36.204c9.997-9.998 26.207-9.998 36.204 0L192 312.69 432.095 72.596c9.997-9.997 26.207-9.997 36.204 0l36.203 36.204c9.997 9.997 9.997 26.206 0 36.204l-294.4 294.401c-9.998 9.997-26.207 9.997-36.204-.001z" /></svg>`;
 const ExclamationTriangle = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" /></svg>`;
-const ExclamationCircle = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon unreviewed-icon"><title>Unreviewed PR - Needs review</title><path d="M504 256c0 136.997-111.043 248-248 248S8 392.997 8 256C8 119.083 119.043 8 256 8s248 111.083 248 248zm-248 50c-25.405 0-46 20.595-46 46s20.595 46 46 46 46-20.595 46-46-20.595-46-46-46zm-43.673-165.346l7.418 136c.347 6.364 5.609 11.346 11.982 11.346h48.546c6.373 0 11.635-4.982 11.982-11.346l7.418-136c.375-6.874-5.098-12.654-11.982-12.654h-63.383c-6.884 0-12.356 5.78-11.981 12.654z" /></svg>`;
-
 const combineReviewsAndComments = (reviews, comments) => {
   const events = [];
 
@@ -566,29 +564,69 @@ const formatDistanceToNow = (date) => {
   return `about ${years} year${years === 1 ? '' : 's'} ago`;
 };
 
+const formatCompactDistanceToNow = (date) => {
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0 || isNaN(diffMs)) return '--';
+  const seconds = Math.max(1, Math.floor(diffMs / 1e3));
+  const minutes = Math.round(diffMs / 6e4);
+  const days = Math.round(diffMs / 864e5);
+  const months = Math.round(days / 30);
+  const years = Math.round(days / 360);
+
+  if (minutes < 1) return `${seconds}s`;
+  if (minutes < 45) return `${minutes}m`;
+  if (minutes < 90) return '1h';
+  if (days < 1) return `${Math.floor(minutes / 60)}h`;
+  if (days < 30) return `${days}d`;
+  if (months < 12) return `${months}mo`;
+  return `${years}y`;
+};
+
+const joinInlineParts = (parts) => parts.filter(Boolean).join(' ');
+
+const renderHeaderSummary = (summaries) => {
+  const visibleSummaries = summaries.filter(Boolean);
+  if (visibleSummaries.length === 0) return '';
+  return `<span class="view-summary">— ${visibleSummaries.join(' | ')}</span>`;
+};
+
 const renderPR = (pr, isRecent = true, showBranch = false, index = 0, isSelected = false) => {
   const { number, title, url, repository, teamSlugs = [] } = pr;
   const dateKey = isRecent ? 'committedDate' : 'createdAt';
   const date = pr[dateKey];
-  const elapsedTimeStr = formatDistanceToNow(date);
+  const elapsedTimeStr = formatCompactDistanceToNow(date);
+  const elapsedTimeTitle = `${formatDistanceToNow(date)} (${date.toLocaleString()})`;
   const id = `pr-time-${pr.url}`;
   const selectedClass = isSelected ? 'selected' : '';
   const teamBadges = renderTeamBadges(teamSlugs);
+  const timestamp = `<span id="${id}" class="pr-age" title="${elapsedTimeTitle}">${elapsedTimeStr}</span>`;
 
   if (isRecent) {
-    return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}"><div class="pr-main-line"><span id="${id}" title="${date}">${elapsedTimeStr}</span> ${teamBadges}${pr.author.login}&nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${number}</a>&nbsp;${title}</div></li>`;
+    const mainContent = joinInlineParts([
+      teamBadges,
+      pr.author.login,
+      `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${number}</a>`,
+      title,
+    ]);
+    return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}"><div class="pr-main-line">${timestamp} ${mainContent}</div></li>`;
   }
 
   const { createdAt, reviews, comments, baseRefName, author: { login: author }, headRefOid, commits } = pr;
   const events = combineReviewsAndComments(reviews, comments);
   const commitState = getCommitState(headRefOid, commits);
-  const reviewState = reviews.nodes.length === 0 ? ExclamationCircle() : '';
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
-  const branch = showBranch ? `${baseRefName} ` : '';
-  const timestamp = `<span id="${id}" title="${date}">${elapsedTimeStr}</span>`;
+  const branch = showBranch ? baseRefName : '';
   const ageClass = getAgeString(createdAt);
+  const mainContent = joinInlineParts([
+    teamBadges,
+    commitState,
+    branch,
+    author,
+    prLink,
+    title,
+  ]);
 
-  const mainLine = `<div class="pr-main-line ${ageClass}">${timestamp} ${teamBadges}${reviewState} ${commitState} ${branch}${author} ${prLink} ${title}</div>`;
+  const mainLine = `<div class="pr-main-line ${ageClass}">${timestamp} ${mainContent}</div>`;
   const eventLines = events.length > 0
     ? `<div class="pr-event-lines">&nbsp;&nbsp;${events.map((event, eventIndex) => TimelineEvent({ ...event, key: eventIndex })).join('')}</div>`
     : '';
@@ -768,8 +806,8 @@ const render = () => {
     prView.classList.add('hidden');
 
     const badgeEl = `(${visibleRepos.length})`;
-    const scopeEl = scopeLabel ? `<span class="team-filter-summary">${scopeLabel}</span>` : '';
-    repoHeader.innerHTML = `Repositories ${badgeEl}${scopeEl}`;
+    const summaryEl = renderHeaderSummary([scopeLabel]);
+    repoHeader.innerHTML = `Repositories ${badgeEl}${summaryEl ? ` ${summaryEl}` : ''}`;
 
       repoList.innerHTML = visibleRepos.map((repo, index) => {
         const isIgnored = isRepoIgnored(repo);
@@ -793,10 +831,13 @@ const render = () => {
   prView.classList.remove('hidden');
 
   const sectionHeader = (title, badgeContent = null, prState = '') => {
-    const stateLabel = prState ? `<span class="pr-state">${prState.toLowerCase()}</span>` : '';
-    const badgeEl = badgeContent !== null ? `(${badgeContent} ${stateLabel})` : '';
-    const scopeEl = scopeLabel ? `<span class="team-filter-summary">${scopeLabel}</span>` : '';
-    return `<div class="section-header">${title} ${badgeEl}${scopeEl}</div>`;
+    const summaryEl = renderHeaderSummary([
+      prState ? prState.toLowerCase() : '',
+      scopeLabel,
+      state.showNeedsReviewPRs ? 'awaiting review' : '',
+    ]);
+    const badgeEl = badgeContent !== null ? `(${badgeContent})` : '';
+    return `<div class="section-header">${title} ${badgeEl}${summaryEl ? ` ${summaryEl}` : ''}</div>`;
   };
 
   if (state.showRecentPRs) {
