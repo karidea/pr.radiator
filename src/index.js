@@ -4,7 +4,6 @@ const byCommittedDateDesc = (a, b) => b.committedDate.getTime() - a.committedDat
 const STORAGE_KEYS = {
   token: 'PR_RADIATOR_TOKEN',
   owner: 'PR_RADIATOR_OWNER',
-  team: 'PR_RADIATOR_TEAM',
   teams: 'PR_RADIATOR_TEAMS',
   repos: 'PR_RADIATOR_REPOS',
   ignoreRepos: 'PR_RADIATOR_IGNORE_REPOS',
@@ -48,43 +47,6 @@ const parseTeamInput = (value) => dedupeStrings(
     .map((slug) => slug.trim())
     .filter(Boolean)
 );
-
-const normalizeConfiguredTeams = (storedTeams, legacyTeam) => {
-  const sourceTeams = Array.isArray(storedTeams) && storedTeams.length > 0
-    ? storedTeams
-    : legacyTeam
-      ? [legacyTeam]
-      : [];
-
-  return dedupeStrings(sourceTeams.map((team) => (
-    typeof team === 'string' ? team.trim() : team?.slug?.trim()
-  )));
-};
-
-const normalizeRepoMappings = (storedRepos, storedTeams, configuredTeams, legacyTeam, legacyRepos) => {
-  const teamsWithRepos = Array.isArray(storedTeams)
-    ? storedTeams.filter((team) => team && typeof team === 'object' && Array.isArray(team.repos))
-    : [];
-  const repoSource = Array.isArray(storedRepos) && storedRepos.some((entry) => entry && typeof entry === 'object' && 'slug' in entry)
-    ? storedRepos
-    : teamsWithRepos.length > 0
-      ? teamsWithRepos
-      : legacyTeam && Array.isArray(legacyRepos)
-        ? [{ slug: legacyTeam, repos: legacyRepos }]
-        : [];
-
-  const repoMap = new Map();
-  repoSource.forEach((entry) => {
-    const slug = typeof entry === 'string' ? entry.trim() : entry?.slug?.trim();
-    if (!slug) return;
-    repoMap.set(slug, dedupeStrings(Array.isArray(entry?.repos) ? entry.repos : []));
-  });
-
-  return configuredTeams.map((slug) => ({
-    slug,
-    repos: repoMap.get(slug) || [],
-  }));
-};
 
 const getAllReposFromMappings = (repoMappings) => dedupeStrings(
   repoMappings.flatMap((team) => Array.isArray(team.repos) ? team.repos : [])
@@ -146,17 +108,26 @@ const persistConfig = (config) => {
   localStorage.setItem(STORAGE_KEYS.teams, JSON.stringify(config.teams));
   localStorage.setItem(STORAGE_KEYS.repos, JSON.stringify(config.repos));
   localStorage.setItem(STORAGE_KEYS.ignoreRepos, JSON.stringify(config.ignoreRepos));
-  localStorage.removeItem(STORAGE_KEYS.team);
 };
 
-const legacyTeam = localStorage.getItem(STORAGE_KEYS.team) || '';
 const storedRepos = parseStoredJSON(STORAGE_KEYS.repos, []);
-const legacyRepos = Array.isArray(storedRepos) && storedRepos.every((entry) => typeof entry === 'string')
-  ? storedRepos
-  : [];
-const storedTeams = parseStoredJSON(STORAGE_KEYS.teams, []);
-const initialTeams = normalizeConfiguredTeams(storedTeams, legacyTeam);
-const initialRepos = normalizeRepoMappings(storedRepos, storedTeams, initialTeams, legacyTeam, legacyRepos);
+const initialTeams = dedupeStrings(
+  parseStoredJSON(STORAGE_KEYS.teams, [])
+    .map((team) => (typeof team === 'string' ? team.trim() : ''))
+    .filter(Boolean)
+);
+const storedRepoMappings = new Map(
+  (Array.isArray(storedRepos) ? storedRepos : [])
+    .map((entry) => {
+      const slug = typeof entry?.slug === 'string' ? entry.slug.trim() : '';
+      return [slug, dedupeStrings(Array.isArray(entry?.repos) ? entry.repos : [])];
+    })
+    .filter(([slug]) => Boolean(slug))
+);
+const initialRepos = initialTeams.map((slug) => ({
+  slug,
+  repos: storedRepoMappings.get(slug) || [],
+}));
 
 const RepositoriesQuery = (owner, team, next) => {
   const after = next ? `"${next}"` : 'null';
@@ -906,10 +877,6 @@ const cycleActiveTeam = () => {
 };
 
 const init = async () => {
-  if (state.config.teams.length > 0 && !localStorage.getItem(STORAGE_KEYS.teams)) {
-    persistConfig(state.config);
-  }
-
   if (state.config.token && state.config.owner && getAllReposFromMappings(state.config.repos).length > 0) {
     await fetchOpenPRs(state.config.token, state.config.owner, getVisibleRepos(), state.config.ignoreRepos);
   }

@@ -28,7 +28,7 @@ Fetch PRs by organization team name and display pertinent details
 ## Configuration
 * `PR_RADIATOR_TOKEN`: Github Personal Access Token (https://github.com/settings/tokens)
   * `read:org, repo` scopes needed and SSO for organization needs to be enabled
-* `PR_RADIATOR_REPOS`: Array of strings of the repository names to query
-* `PR_RADIATOR_TEAM`: Github team (used to fetch the repository names)
-* `PR_RADIATOR_ORGANIZATION`: Github organization
+* `PR_RADIATOR_OWNER`: Github organization
+* `PR_RADIATOR_TEAMS`: Array of team slugs
+* `PR_RADIATOR_REPOS`: Array of objects in the shape `{ slug, repos }`
 * `PR_RADIATOR_IGNORE_REPOS`: Array of strings of the repos to ignore
