@@ -1095,10 +1095,7 @@ const init = async () => {
           });
       },
       t: () => {
-        if (!cycleActiveTeam()) return;
-        refreshCurrentView({ reposOverride: getAllConfiguredRepos(), merge: false }).catch((error) => {
-          console.error('Error refreshing after cycling team filter', error);
-        });
+        cycleActiveTeam();
       },
       c: () => openSettings(),
       '?': () => {
