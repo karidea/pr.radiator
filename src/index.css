@@ -446,14 +446,11 @@ a {
 
 .team-badge {
   display: inline-block;
-  padding: 0 6px;
-  border-radius: 999px;
-  border: 1px solid #3a3e44;
+  padding: 0 4px;
   background-color: #23262d;
   color: #8f9aa7;
   font-size: 11px;
-  line-height: 1.5;
-  letter-spacing: 0.02em;
+  line-height: 1.4;
 }
 
 .view {

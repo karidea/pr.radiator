@@ -9,6 +9,10 @@ const STORAGE_KEYS = {
   ignoreRepos: 'PR_RADIATOR_IGNORE_REPOS',
 };
 
+const GRAPHQL_REPO_BATCH_SIZE = 4;
+const RATE_LIMIT_COOLDOWN_THRESHOLD = 100;
+const RATE_LIMIT_RESET_BUFFER_MS = 1000;
+
 const progressBar = document.getElementById('progress-bar');
 const repoRefreshStatus = document.getElementById('repo-refresh-status');
 const repoView = document.getElementById('repo-view');
@@ -40,6 +44,7 @@ const parseStoredJSON = (key, fallback) => {
 
 const dedupeStrings = (values) => [...new Set(values.filter(Boolean))];
 const getActorLogin = (actor, fallback = 'unknown') => actor?.login || fallback;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const parseTeamInput = (value) => dedupeStrings(
   value
@@ -210,22 +215,44 @@ const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
 
 const api = {
   fetchBatchQueries: async (token, type, owner, repos, sinceDateTime) => {
-    const result = Array.from(
-      { length: Math.ceil(repos.length / 4) },
-      (_, index) => repos.slice(index * 4, (index + 1) * 4)
+    const repoChunks = Array.from(
+      { length: Math.ceil(repos.length / GRAPHQL_REPO_BATCH_SIZE) },
+      (_, index) => repos.slice(index * GRAPHQL_REPO_BATCH_SIZE, (index + 1) * GRAPHQL_REPO_BATCH_SIZE)
     );
 
-    return Promise.all(result.map(async (reposChunk) => {
-      const response = await fetch('https://api.github.com/graphql', {
-        method: 'post',
-        headers: { Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ query: buildBatchQuery(type, owner, reposChunk, sinceDateTime) }),
-      });
-      if (!response.ok) {
-        throw new Error(`GraphQL request failed: ${response.status} ${response.statusText}`);
+    return Promise.all(repoChunks.map((reposChunk) => api.fetchGraphQL(token, buildBatchQuery(type, owner, reposChunk, sinceDateTime))));
+  },
+  fetchGraphQL: async (token, query) => {
+    if (shouldPauseGitHubRefresh()) {
+      throw new Error(getGitHubRateLimitPauseMessage());
+    }
+
+    const response = await fetch('https://api.github.com/graphql', {
+      method: 'post',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ query }),
+    });
+
+    const rateLimit = getGitHubRateLimitFromHeaders(response.headers);
+    if (rateLimit) {
+      updateGitHubRateLimit(rateLimit);
+    }
+
+    const payload = await response.json();
+    const hitRateLimit = hasRateLimitError(response, payload, rateLimit);
+
+    if (hitRateLimit) {
+      if (rateLimit?.resetAt) {
+        updateGitHubRateLimit({ ...rateLimit, isCoolingDown: true });
       }
-      return response.json();
-    }));
+      throw new Error(getGitHubRateLimitPauseMessage(rateLimit));
+    }
+
+    if (!response.ok) {
+      throw new Error(`GraphQL request failed: ${response.status} ${response.statusText}`);
+    }
+
+    return payload;
   },
   queryTeamRepos: async (token, owner, team) => {
     let hasNextPage = true;
@@ -233,15 +260,7 @@ const api = {
     const repoNames = [];
 
     while (hasNextPage) {
-      const response = await fetch('https://api.github.com/graphql', {
-        method: 'post',
-        headers: { Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ query: RepositoriesQuery(owner, team, next) }),
-      });
-      if (!response.ok) {
-        throw new Error(`GraphQL request failed: ${response.status} ${response.statusText}`);
-      }
-      const result = await response.json();
+      const result = await api.fetchGraphQL(token, RepositoriesQuery(owner, team, next));
       const repositories = result?.data?.organization?.team?.repositories;
 
       if (!repositories) {
@@ -395,6 +414,10 @@ const refreshCurrentView = async (options = {}) => {
   const repos = options.reposOverride || getVisibleRepos(config, activeTeamSlug);
 
   if (!token || !owner) return;
+  if (shouldPauseGitHubRefresh()) {
+    renderRepoRefreshStatus();
+    return;
+  }
 
   if (state.showRepoLinks) {
     render();
@@ -413,6 +436,10 @@ const refreshAllTeamRepos = async (configOverride = state.config) => {
   const { token, owner, teams } = configOverride;
   if (!token || !owner || teams.length === 0) {
     console.warn('Cannot refresh repos: missing config');
+    return configOverride;
+  }
+  if (shouldPauseGitHubRefresh()) {
+    renderRepoRefreshStatus();
     return configOverride;
   }
 
@@ -660,10 +687,107 @@ const initialState = {
   isFetchingOpenPRs: false,
   isFetchingRecentPRs: false,
   isFetchingRepos: false,
+  githubRateLimit: {
+    remaining: null,
+    resetAt: null,
+    isCoolingDown: false,
+  },
   activeTeamSlug: '',
 };
 
 let state = { ...initialState };
+let rateLimitResetTimer = null;
+
+const getActiveGitHubRateLimit = (rateLimit = state.githubRateLimit) => {
+  if (!rateLimit?.resetAt || rateLimit.resetAt <= Date.now()) {
+    return {
+      ...rateLimit,
+      resetAt: null,
+      isCoolingDown: false,
+    };
+  }
+
+  return rateLimit;
+};
+
+const getGitHubRateLimitPauseMessage = (rateLimit = state.githubRateLimit) => {
+  const activeRateLimit = getActiveGitHubRateLimit(rateLimit);
+  if (!activeRateLimit.isCoolingDown || !activeRateLimit.resetAt) {
+    return 'GitHub rate limit pause is active.';
+  }
+  return `GitHub rate limit pause until ${formatRateLimitResetTime(activeRateLimit.resetAt)}.`;
+};
+
+const shouldPauseGitHubRefresh = () => {
+  const activeRateLimit = getActiveGitHubRateLimit();
+  if (state.githubRateLimit.isCoolingDown && !activeRateLimit.resetAt) {
+    updateGitHubRateLimit({ remaining: null, resetAt: null, isCoolingDown: false });
+    return false;
+  }
+  return Boolean(activeRateLimit.isCoolingDown && activeRateLimit.resetAt);
+};
+
+const updateGitHubRateLimit = (updates) => {
+  const nextRateLimit = getActiveGitHubRateLimit({
+    ...state.githubRateLimit,
+    ...updates,
+  });
+  const shouldCoolDown = Boolean(
+    nextRateLimit.resetAt
+    && nextRateLimit.remaining !== null
+    && nextRateLimit.remaining <= RATE_LIMIT_COOLDOWN_THRESHOLD
+  );
+  nextRateLimit.isCoolingDown = Boolean(nextRateLimit.isCoolingDown || shouldCoolDown);
+  const currentRateLimit = state.githubRateLimit;
+
+  if (
+    currentRateLimit.remaining === nextRateLimit.remaining
+    && currentRateLimit.resetAt === nextRateLimit.resetAt
+    && currentRateLimit.isCoolingDown === nextRateLimit.isCoolingDown
+  ) {
+    return;
+  }
+
+  if (rateLimitResetTimer) {
+    clearTimeout(rateLimitResetTimer);
+    rateLimitResetTimer = null;
+  }
+
+  if (nextRateLimit.isCoolingDown && nextRateLimit.resetAt) {
+    const waitMs = Math.max(0, nextRateLimit.resetAt - Date.now() + RATE_LIMIT_RESET_BUFFER_MS);
+    rateLimitResetTimer = window.setTimeout(() => {
+      rateLimitResetTimer = null;
+      updateGitHubRateLimit({ remaining: null, resetAt: null, isCoolingDown: false });
+    }, waitMs);
+  }
+
+  setState({ githubRateLimit: nextRateLimit });
+};
+
+const getGitHubRateLimitFromHeaders = (headers) => {
+  const remaining = Number.parseInt(headers.get('x-ratelimit-remaining') || '', 10);
+  const reset = Number.parseInt(headers.get('x-ratelimit-reset') || '', 10);
+
+  if (!Number.isFinite(remaining) && !Number.isFinite(reset)) {
+    return null;
+  }
+
+  return {
+    remaining: Number.isFinite(remaining) ? remaining : null,
+    resetAt: Number.isFinite(reset) ? reset * 1000 : null,
+    isCoolingDown: false,
+  };
+};
+
+const hasRateLimitError = (response, payload, rateLimit) => {
+  if (response.status === 403 && rateLimit?.remaining === 0) return true;
+  return Boolean(payload?.errors?.some((error) => /rate limit/i.test(error.message)));
+};
+
+const formatRateLimitResetTime = (timestamp) => new Date(timestamp).toLocaleTimeString([], {
+  hour: 'numeric',
+  minute: '2-digit',
+});
 
 const startProgress = () => {
   if (progressBar) progressBar.classList.add('active');
@@ -680,6 +804,14 @@ const stopProgress = () => {
 
 const renderRepoRefreshStatus = () => {
   if (!repoRefreshStatus) return;
+
+  const activeRateLimit = getActiveGitHubRateLimit();
+  if (activeRateLimit.isCoolingDown && activeRateLimit.resetAt) {
+    repoRefreshStatus.textContent = getGitHubRateLimitPauseMessage(activeRateLimit);
+    repoRefreshStatus.classList.remove('hidden');
+    repoRefreshStatus.classList.add('active');
+    return;
+  }
 
   if (!state.isFetchingRepos) {
     repoRefreshStatus.textContent = '';
@@ -970,7 +1102,7 @@ const init = async () => {
 
   useInterval(() => {
     const repos = getVisibleRepos();
-    if (state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs) {
+    if (state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
       refreshCurrentView().catch((error) => {
         console.error('Error refreshing PRs on interval', error);
       });
@@ -1194,7 +1326,7 @@ const init = async () => {
 
   document.addEventListener('visibilitychange', () => {
     const repos = getVisibleRepos();
-    if (document.visibilityState === 'visible' && state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs) {
+    if (document.visibilityState === 'visible' && state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
       refreshCurrentView().catch((error) => {
         console.error('Error refreshing PRs on tab focus', error);
       });
