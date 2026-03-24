@@ -14,7 +14,6 @@ const repoRefreshStatus = document.getElementById('repo-refresh-status');
 const repoView = document.getElementById('repo-view');
 const repoHeader = document.getElementById('repo-header');
 const repoList = document.getElementById('repo-list');
-const repoNavHint = document.getElementById('repo-nav-hint');
 const prView = document.getElementById('pr-view');
 const openPrView = document.getElementById('open-pr-view');
 const openPrHeader = document.getElementById('open-pr-header');
@@ -86,9 +85,9 @@ const getTeamScopeLabel = () => {
   const { teams } = state.config;
   if (teams.length === 0) return '';
   if (!state.activeTeamSlug) {
-    return teams.length === 1 ? teams[0] : `all teams (${teams.length})`;
+    return teams.length === 1 ? `team: ${teams[0]}` : 'all teams';
   }
-  return `${state.activeTeamSlug} (1/${teams.length})`;
+  return `team: ${state.activeTeamSlug}`;
 };
 
 const shouldShowInlineTeamBadges = () => state.config.teams.length > 1 && !state.activeTeamSlug;
@@ -772,16 +771,14 @@ const render = () => {
     const scopeEl = scopeLabel ? `<span class="team-filter-summary">${scopeLabel}</span>` : '';
     repoHeader.innerHTML = `Repositories ${badgeEl}${scopeEl}`;
 
-    repoList.innerHTML = visibleRepos.map((repo, index) => {
-      const isIgnored = isRepoIgnored(repo);
-      const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
-      return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${renderTeamBadges(getRepoTeamSlugs(repo))}<a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener noreferrer">${repo}</a></li>`;
-    }).join('');
+      repoList.innerHTML = visibleRepos.map((repo, index) => {
+        const isIgnored = isRepoIgnored(repo);
+        const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
+        return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${renderTeamBadges(getRepoTeamSlugs(repo))}<a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener noreferrer">${repo}</a></li>`;
+      }).join('');
 
-    repoNavHint.innerHTML = 'j/k to navigate · enter to open · i to toggle ignore · t to cycle team focus';
-
-    if (selectedRepoIndex >= 0) {
-      repoList.focus();
+      if (selectedRepoIndex >= 0) {
+        repoList.focus();
       setTimeout(() => {
         const selectedItem = repoList.querySelector('.repo-item.selected');
         if (selectedItem) {
