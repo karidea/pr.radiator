@@ -102,25 +102,43 @@ a {
 
 .keyboard-shortcuts-overlay {
   position: fixed;
-  bottom: 20px;
-  right: 20px;
-  left: auto;
-  background-color: #2c2f33;
-  border: 1px solid #3a3e44;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  padding: 16px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #1b1d22;
+  border-top: 1px solid #3a3e44;
+  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.25);
+  padding: 12px 16px 14px;
   z-index: 1000;
-  max-width: 320px;
-  font-family: Arial, sans-serif;
-  font-size: 14px;
+  font-size: 12px;
   color: #cccccc;
 }
 
+.keyboard-shortcuts-content {
+  max-width: 960px;
+}
+
 .keyboard-shortcuts-overlay h2 {
-  font-size: 16px;
-  margin-bottom: 12px;
-  color: #dddddd;
+  font-size: 12px;
+  margin: 0 0 8px;
+  color: #fabd2f;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.shortcut-sections {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 24px;
+}
+
+.shortcut-group h3 {
+  margin: 0 0 6px;
+  color: #8a8a6f;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .keyboard-shortcuts-overlay ul {
@@ -130,13 +148,16 @@ a {
 }
 
 .keyboard-shortcuts-overlay li {
-  margin-bottom: 8px;
+  margin: 0 0 3px;
 }
 
 .keyboard-shortcuts-overlay li::before {
-  content: "•";
-  margin-right: 8px;
-  color: #999999;
+  content: none;
+}
+
+.keyboard-shortcuts-overlay strong {
+  color: #ffffff;
+  font-weight: 600;
 }
 
 .event-icon {

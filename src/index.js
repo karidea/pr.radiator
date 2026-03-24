@@ -65,13 +65,16 @@ const getVisibleRepos = (config = state.config, activeTeamSlug = state.activeTea
 
 const getAllConfiguredRepos = (config = state.config) => getAllReposFromMappings(config.repos);
 
+const isDependabotFilterActive = () => state.showDependabotPRs && !state.showRecentPRs && !state.showRepoLinks;
+const shouldHideDependabotPRs = () => !state.showDependabotPRs && !state.showRecentPRs && !state.showRepoLinks;
+
 const isNeedsReviewFilterActive = () => state.showNeedsReviewPRs && !state.showRecentPRs && !state.showRepoLinks;
 
 const getDisplayPRs = () => {
   const sourcePRs = state.showRecentPRs ? state.recentPRs : state.PRs;
   const visibleTeamSlugs = new Set(getVisibleTeamSlugs());
   const ignoredRepos = new Set(state.config.ignoreRepos);
-  const hideDependabot = !state.showDependabotPRs;
+  const hideDependabot = shouldHideDependabotPRs();
   const needsReviewOnly = isNeedsReviewFilterActive();
 
   return sourcePRs.filter((pr) => {
@@ -836,6 +839,7 @@ const render = () => {
     const summaryEl = renderHeaderSummary([
       prState ? prState.toLowerCase() : '',
       scopeLabel,
+      isDependabotFilterActive() ? '+dependabot' : '',
       isNeedsReviewFilterActive() ? 'awaiting review' : '',
     ]);
     const badgeEl = badgeContent !== null ? `(${badgeContent})` : '';
