@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PR Radiator</title>
   <link rel="icon" href="/pr.radiator/favicon.ico" />
-  <script type="module" crossorigin src="/pr.radiator/assets/index-CGE9FQ9W.js"></script>
-  <link rel="stylesheet" crossorigin href="/pr.radiator/assets/index-C2ByuSHY.css">
+  <script type="module" crossorigin src="/pr.radiator/assets/index-tbX5maaB.js"></script>
+  <link rel="stylesheet" crossorigin href="/pr.radiator/assets/index-CkzCmCTJ.css">
 </head>
 <body>
   <div id="progress-bar"></div>
@@ -28,26 +28,30 @@
   </div>
   <div id="settings-form" class="settings-form" style="display: none;">
     <div class="settings-panel">
-      <h2>Configuration</h2>
-      <p class="settings-intro">Edit the repository scope for this view. Press <strong>Enter</strong> to apply or <strong>Esc</strong> to close without writing changes.</p>
-      <div id="config-form" class="config-panel">
-        <div class="settings-field">
-          <label for="owner">Owner</label>
-          <p class="settings-help">Organization login used for repo and PR queries.</p>
-          <input type="text" id="owner" name="owner" placeholder="my-org" autocomplete="organization" required>
-        </div>
-        <div class="settings-field">
-          <label for="teams">Teams</label>
-          <p class="settings-help">Comma-separated team slugs to include in the radiator.</p>
-          <input type="text" id="teams" name="teams" placeholder="platform, design-systems, developer-experience" autocomplete="off" spellcheck="false" required>
-        </div>
-        <div class="settings-field">
-          <label for="token">Token</label>
-          <p class="settings-help">GitHub personal access token with the required org and repo access.</p>
-          <input type="password" id="token" name="token" autocomplete="off" required>
-        </div>
-        <button type="button" class="settings-submit" id="apply-config">Apply configuration</button>
+      <div class="settings-heading" role="heading" aria-level="2">
+        <span class="settings-title">Configure GitHub</span>
+        <span class="settings-intro">local settings · Enter apply · Esc close</span>
       </div>
+      <div class="config-sections">
+        <section class="config-panel auth-config-panel" aria-label="Authentication">
+          <div class="settings-row">
+            <label for="token">GitHub</label>
+            <input type="password" id="token" name="token" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false" required>
+          </div>
+          <p class="settings-note">Use a classic GitHub token with <code>repo</code> and <code>read:org</code>. <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener noreferrer">Create a classic token</a>.</p>
+        </section>
+        <section class="config-panel scope-config-panel" aria-label="Repository scope">
+          <div class="settings-row">
+            <label for="owner">Owner</label>
+            <input type="text" id="owner" name="owner" placeholder="GitHub org login" autocomplete="organization" required>
+          </div>
+          <div class="settings-row">
+            <label for="teams">Teams</label>
+            <input type="text" id="teams" name="teams" placeholder="GitHub team slugs" autocomplete="off" spellcheck="false" required>
+          </div>
+        </section>
+      </div>
+      <button type="button" class="settings-submit" id="apply-config">Apply configuration</button>
     </div>
   </div>
   <div class="keyboard-shortcuts-overlay" id="shortcuts-overlay" style="display: none;">

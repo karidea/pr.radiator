@@ -26,7 +26,6 @@ const shortcutsOverlay = document.getElementById('shortcuts-overlay');
 const ownerInput = document.getElementById('owner');
 const teamsInput = document.getElementById('teams');
 const tokenInput = document.getElementById('token');
-const configForm = document.getElementById('config-form');
 const applyConfigButton = document.getElementById('apply-config');
 
 const parseStoredJSON = (key, fallback) => {
@@ -741,49 +740,79 @@ const updateShortcutsOverlayLayout = () => {
   document.body.style.setProperty('--shortcuts-overlay-height', `${shortcutsOverlay.offsetHeight}px`);
 };
 
+const canRefreshConfig = (config) => Boolean(config.token && config.owner && config.teams.length > 0);
+
+const buildRepoMappings = (teamSlugs, repoMappings = state.config.repos) => {
+  const previousRepos = new Map(repoMappings.map((team) => [team.slug, team.repos]));
+  return teamSlugs.map((slug) => ({
+    slug,
+    repos: previousRepos.get(slug) || [],
+  }));
+};
+
+const applyConfigLocally = (nextConfig, updates = {}) => {
+  persistConfig(nextConfig);
+  setState({
+    config: nextConfig,
+    ...updates,
+  });
+};
+
+const refreshAfterConfigChange = async (nextConfig, { activeTeamSlugOverride = state.activeTeamSlug } = {}) => {
+  const refreshedConfig = await refreshAllTeamRepos(nextConfig);
+  await refreshCurrentView({
+    configOverride: refreshedConfig,
+    activeTeamSlugOverride,
+    reposOverride: getVisibleRepos(refreshedConfig, activeTeamSlugOverride),
+    merge: false,
+  });
+  closeSettings();
+};
+
 const applyConfig = async () => {
   const owner = ownerInput.value.trim();
   const token = tokenInput.value.trim();
   const teamSlugs = parseTeamInput(teamsInput.value);
+
+  if (!owner) {
+    console.warn('Please configure an owner.');
+    return;
+  }
 
   if (teamSlugs.length === 0) {
     console.warn('Please configure at least one team.');
     return;
   }
 
-  const previousRepos = new Map(state.config.repos.map((team) => [team.slug, team.repos]));
-  const repos = teamSlugs.map((slug) => ({
-    slug,
-    repos: previousRepos.get(slug) || [],
-  }));
-
   const nextConfig = {
     ...state.config,
     owner,
     token,
     teams: teamSlugs,
-    repos,
+    repos: buildRepoMappings(teamSlugs),
   };
 
-  persistConfig(nextConfig);
-  setState({
-    config: nextConfig,
+  applyConfigLocally(nextConfig, {
     activeTeamSlug: '',
     selectedRepoIndex: -1,
     selectedPrIndex: -1,
   });
 
-  try {
-    const refreshedConfig = await refreshAllTeamRepos(nextConfig);
-    await refreshCurrentView({
-      configOverride: refreshedConfig,
-      activeTeamSlugOverride: '',
-      reposOverride: getAllConfiguredRepos(refreshedConfig),
-      merge: false,
+  if (!canRefreshConfig(nextConfig)) {
+    requestAnimationFrame(() => {
+      if (!nextConfig.owner || nextConfig.teams.length === 0) {
+        teamsInput.focus();
+      } else {
+        tokenInput.focus();
+      }
     });
-    closeSettings();
+    return;
+  }
+
+  try {
+    await refreshAfterConfigChange(nextConfig, { activeTeamSlugOverride: '' });
   } catch (error) {
-    console.error('Error updating configuration', error);
+    console.error('Error applying configuration', error);
   }
 };
 
@@ -956,6 +985,7 @@ const init = async () => {
         console.error('Error applying configuration', error);
       });
     });
+
     [ownerInput, teamsInput, tokenInput].forEach((input) => {
       input.addEventListener('keydown', (event) => {
         if (event.key !== 'Enter') return;
@@ -973,6 +1003,8 @@ const init = async () => {
   document.addEventListener('keydown', (event) => {
     if (settingsForm.style.display === 'block') {
       if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
         closeSettings();
       }
       return;
