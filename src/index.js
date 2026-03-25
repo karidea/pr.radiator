@@ -7,9 +7,10 @@ const STORAGE_KEYS = {
   teams: 'PR_RADIATOR_TEAMS',
   repos: 'PR_RADIATOR_REPOS',
   ignoreRepos: 'PR_RADIATOR_IGNORE_REPOS',
+  graphqlCostDebug: 'PR_RADIATOR_GRAPHQL_COST_DEBUG',
 };
 
-const GRAPHQL_REPO_BATCH_SIZE = 4;
+const GRAPHQL_REPO_BATCH_SIZE = 2;
 const RATE_LIMIT_COOLDOWN_THRESHOLD = 100;
 const RATE_LIMIT_RESET_BUFFER_MS = 1000;
 const STORAGE_WRITE_FRAME_DELAY = 16;
@@ -45,6 +46,9 @@ const parseStoredJSON = (key, fallback) => {
 
 const dedupeStrings = (values) => [...new Set(values.filter(Boolean))];
 const getActorLogin = (actor, fallback = 'unknown') => actor?.login || fallback;
+const shouldLogGraphQLCost = () => window.location.hostname === 'localhost'
+  || localStorage.getItem(STORAGE_KEYS.graphqlCostDebug) === 'true';
+const formatTiming = (ms) => `${Math.round(ms)}ms`;
 
 const parseTeamInput = (value) => dedupeStrings(
   value
@@ -170,6 +174,7 @@ const buildRecentCommitHistoryFragment = (sinceDateTime) => `
 `;
 
 const innerOpenPRsQuery = `pullRequests(last: 15, states: OPEN) { nodes {title url createdAt baseRefName headRefOid isDraft number author { login } comments (first: 5) {nodes {createdAt author { login }}} reviews(first: 15) {nodes {state createdAt author { login }}} commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}}} reviewDecision }}`;
+const graphqlCostFragment = 'rateLimit { cost remaining resetAt }';
 
 const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
   let innerQuery;
@@ -192,12 +197,13 @@ const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
       ${fragmentPart}
 
       query ${type}PRs {
+        ${graphqlCostFragment}
         ${batchedRepos}
       }
     `;
   }
 
-  return `query ${type}PRs { ${batchedRepos} }`;
+  return `query ${type}PRs { ${graphqlCostFragment} ${batchedRepos} }`;
 };
 
 const api = {
@@ -207,18 +213,24 @@ const api = {
       (_, index) => repos.slice(index * GRAPHQL_REPO_BATCH_SIZE, (index + 1) * GRAPHQL_REPO_BATCH_SIZE)
     );
 
-    return Promise.all(repoChunks.map((reposChunk) => api.fetchGraphQL(token, buildBatchQuery(type, owner, reposChunk, sinceDateTime))));
+    return Promise.all(repoChunks.map((reposChunk) => api.fetchGraphQL(
+      token,
+      buildBatchQuery(type, owner, reposChunk, sinceDateTime),
+      { type }
+    )));
   },
-  fetchGraphQL: async (token, query) => {
+  fetchGraphQL: async (token, query, { type = 'graphql' } = {}) => {
     if (shouldPauseGitHubRefresh()) {
       throw new Error(getGitHubRateLimitPauseMessage());
     }
 
+    const requestStartedAt = performance.now();
     const response = await fetch('https://api.github.com/graphql', {
       method: 'post',
       headers: { Authorization: `Bearer ${token}` },
       body: JSON.stringify({ query }),
     });
+    const responseReceivedAt = performance.now();
 
     const rateLimit = getGitHubRateLimitFromHeaders(response.headers);
     if (rateLimit) {
@@ -226,6 +238,27 @@ const api = {
     }
 
     const payload = await response.json();
+    const payloadParsedAt = performance.now();
+    const graphQLRateLimit = payload?.data?.rateLimit;
+    if (graphQLRateLimit) {
+      const resetAt = graphQLRateLimit.resetAt ? Date.parse(graphQLRateLimit.resetAt) : null;
+      updateGitHubRateLimit({
+        remaining: Number.isFinite(graphQLRateLimit.remaining) ? graphQLRateLimit.remaining : null,
+        resetAt: Number.isFinite(resetAt) ? resetAt : null,
+        isCoolingDown: false,
+      });
+
+      if (shouldLogGraphQLCost()) {
+        console.log(
+          `[GraphQL ${type}] network: ${formatTiming(responseReceivedAt - requestStartedAt)} | parse: ${formatTiming(payloadParsedAt - responseReceivedAt)} | total: ${formatTiming(payloadParsedAt - requestStartedAt)} | cost: ${graphQLRateLimit.cost} | remaining: ${graphQLRateLimit.remaining} | reset: ${graphQLRateLimit.resetAt}`
+        );
+      }
+    } else if (shouldLogGraphQLCost()) {
+      console.log(
+        `[GraphQL ${type}] network: ${formatTiming(responseReceivedAt - requestStartedAt)} | parse: ${formatTiming(payloadParsedAt - responseReceivedAt)} | total: ${formatTiming(payloadParsedAt - requestStartedAt)}`
+      );
+    }
+
     const hitRateLimit = hasRateLimitError(response, payload, rateLimit);
 
     if (hitRateLimit) {
@@ -295,6 +328,7 @@ const parseDatesInPR = (pr) => {
 
 const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
   const { merge = false } = options;
+  const refreshStartedAt = performance.now();
   try {
     setState({ isFetchingRecentPRs: true });
     startProgress();
@@ -307,9 +341,10 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
 
     const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     const results = await api.fetchBatchQueries(token, 'recent', owner, filteredRepos, sinceTwoWeeksAgo);
+    const fetchCompletedAt = performance.now();
     const refCommits = [];
     results.forEach((result) => {
-      const keys = Object.keys(result.data);
+      const keys = Object.keys(result.data).filter((key) => key !== 'rateLimit');
       keys.forEach((key) => {
         const repoData = result.data[key];
         const mainRef = repoData.mainRef;
@@ -336,12 +371,21 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
 
     filteredRecentPRs.forEach(parseDatesInPR);
     const recentPRs = filteredRecentPRs.sort(byCommittedDateDesc);
+    const transformCompletedAt = performance.now();
 
+    const renderStartedAt = performance.now();
     setState({
       recentPRs: merge
         ? mergePullRequestCache(state.recentPRs, recentPRs, filteredRepos, byCommittedDateDesc)
         : recentPRs,
     });
+    const renderCompletedAt = performance.now();
+
+    if (shouldLogGraphQLCost()) {
+      console.log(
+        `[PR refresh recent] total: ${formatTiming(renderCompletedAt - refreshStartedAt)} | fetch: ${formatTiming(fetchCompletedAt - refreshStartedAt)} | transform: ${formatTiming(transformCompletedAt - fetchCompletedAt)} | render: ${formatTiming(renderCompletedAt - renderStartedAt)} | repos: ${filteredRepos.length} | prs: ${recentPRs.length}`
+      );
+    }
   } catch (error) {
     console.log('Failed to fetch recent PRs', error);
   } finally {
@@ -352,6 +396,7 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
 
 const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
   const { merge = false } = options;
+  const refreshStartedAt = performance.now();
   try {
     setState({ isFetchingOpenPRs: true });
     startProgress();
@@ -363,9 +408,10 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
     }
 
     const results = await api.fetchBatchQueries(token, 'open', owner, filteredRepos);
+    const fetchCompletedAt = performance.now();
     const resultPRs = [];
     results.forEach((result) => {
-      const keys = Object.keys(result.data);
+      const keys = Object.keys(result.data).filter((key) => key !== 'rateLimit');
       keys.forEach((key) => {
         const repoName = result.data[key].name;
         const pullRequests = result.data[key]?.pullRequests.nodes ?? [];
@@ -377,12 +423,21 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
 
     resultPRs.forEach(parseDatesInPR);
     const openPRs = resultPRs.sort(sortByCreatedAt).filter((pr) => !pr.isDraft);
+    const transformCompletedAt = performance.now();
 
+    const renderStartedAt = performance.now();
     setState({
       PRs: merge
         ? mergePullRequestCache(state.PRs, openPRs, filteredRepos, sortByCreatedAt)
         : openPRs,
     });
+    const renderCompletedAt = performance.now();
+
+    if (shouldLogGraphQLCost()) {
+      console.log(
+        `[PR refresh open] total: ${formatTiming(renderCompletedAt - refreshStartedAt)} | fetch: ${formatTiming(fetchCompletedAt - refreshStartedAt)} | transform: ${formatTiming(transformCompletedAt - fetchCompletedAt)} | render: ${formatTiming(renderCompletedAt - renderStartedAt)} | repos: ${filteredRepos.length} | prs: ${openPRs.length}`
+      );
+    }
   } catch (error) {
     console.log('Failed to fetch open PRs', error);
   } finally {
@@ -477,7 +532,7 @@ const ICONS = {
   commentDots: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M256 32C114.6 32 0 125.1 0 240c0 49.6 21.4 95 57 130.7C44.5 421.1 2.7 466 2.2 466.5c-2.2 2.3-2.8 5.7-1.5 8.7S4.8 480 8 480c66.3 0 116-31.8 140.6-51.4 32.7 12.3 69 19.4 107.4 19.4 141.4 0 256-93.1 256-208S397.4 32 256 32zM128 272c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32zm128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32zm128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32z" /></svg>`,
   hourglass: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 384 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M360 0H24C10.745 0 0 10.745 0 24v16c0 13.255 10.745 24 24 24 0 90.965 51.016 167.734 120.842 192C75.016 280.266 24 357.035 24 448c-13.255 0-24 10.745-24 24v16c0 13.255 10.745 24 24 24h336c13.255 0 24-10.745 24-24v-16c0-13.255-10.745-24-24-24 0-90.965-51.016-167.734-120.842-192C308.984 231.734 360 154.965 360 64c13.255 0 24-10.745 24-24V24c0-13.255-10.745-24-24-24zm-75.078 384H99.08c17.059-46.797 52.096-80 92.92-80 40.821 0 75.862 33.196 92.922 80zm.019-256H99.078C91.988 108.548 88 86.748 88 64h208c0 22.805-3.987 44.587-11.059 64z" /></svg>`,
   minus: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M3 13h18v-2H3v2z" /></svg>`,
-  times: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 352 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M242.72 256l100.07-100.07c12.28-12.28 12.28-32.19 0-44.48l-22.24-22.24c-12.28-12.28-32.19-12.28-44.48 0L176 189.28 75.93 89.21c-12.28-12.28-32.19-12.28-44.48 0L9.21 111.45c-12.28 12.28-12.28 32.19 0 44.48L109.28 256 9.21 356.07c-12.28-12.28-12.28-32.19 0-44.48l22.24-22.24c12.28-12.28 32.2-12.28 44.48 0L176 322.72l100.07 100.07c12.28 12.28 32.2 12.28 44.48 0l22.24-22.24c12.28-12.28 12.28-32.19 0-44.48L242.72 256z" /></svg>`,
+  times: `<svg stroke="currentColor" fill="none" stroke-width="3" stroke-linecap="round" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M6 6l12 12M18 6L6 18" /></svg>`,
   check: `<svg stroke="currentColor" fill="currentColor" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M173.898 439.404l-166.4-166.4c-9.997-9.997-9.997-26.206 0-36.204l36.203-36.204c9.997-9.998 26.207-9.998 36.204 0L192 312.69 432.095 72.596c9.997-9.997 26.207-9.997 36.204 0l36.203 36.204c9.997 9.997 9.997 26.206 0 36.204l-294.4 294.401c-9.998 9.997-26.207 9.997-36.204-.001z" /></svg>`,
   warning: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" /></svg>`,
 };
@@ -602,21 +657,7 @@ const formatCompactDistanceToNow = (date) => {
   return `${years}y`;
 };
 
-const renderPR = (pr, {
-  isRecent = true,
-  showBranch = false,
-  index = 0,
-  isSelected = false,
-  showInlineTeamBadges = false,
-  teamBadgeCache = null,
-} = {}) => {
-  const { number, title, url, repository, teamSlugs = [] } = pr;
-  const dateKey = isRecent ? 'committedDate' : 'createdAt';
-  const date = pr[dateKey];
-  const elapsedTimeStr = formatCompactDistanceToNow(date);
-  const elapsedTimeTitle = `${formatDistanceToNow(date)} (${date.toLocaleString()})`;
-  const id = `pr-time-${pr.url}`;
-  const selectedClass = isSelected ? 'selected' : '';
+const getTeamBadgesMarkup = (teamSlugs = [], showInlineTeamBadges = false, teamBadgeCache = null) => {
   let teamBadges = '';
   if (showInlineTeamBadges && teamSlugs.length > 0) {
     const badgeKey = teamSlugs.join('|');
@@ -626,20 +667,44 @@ const renderPR = (pr, {
       teamBadgeCache?.set(badgeKey, teamBadges);
     }
   }
-  const timestamp = `<span id="${id}" class="pr-age" title="${elapsedTimeTitle}">${elapsedTimeStr}</span>`;
+  return teamBadges;
+};
+
+const buildPRAgeMarkup = (pr, isRecent) => {
+  const date = pr[isRecent ? 'committedDate' : 'createdAt'];
+  const elapsedTimeStr = formatCompactDistanceToNow(date);
+  const elapsedTimeTitle = `${formatDistanceToNow(date)} (${date.toLocaleString()})`;
+  return `<span id="pr-time-${pr.url}" class="pr-age" title="${elapsedTimeTitle}">${elapsedTimeStr}</span>`;
+};
+
+const getPRPresentation = (pr, {
+  isRecent = true,
+  showBranch = false,
+  showInlineTeamBadges = false,
+  teamBadgeCache = null,
+} = {}) => {
+  const { number, title, url, repository, teamSlugs = [] } = pr;
+  const teamBadges = getTeamBadgesMarkup(teamSlugs, showInlineTeamBadges, teamBadgeCache);
+  const ageMarkup = buildPRAgeMarkup(pr, isRecent);
+  const author = getActorLogin(pr.author);
 
   if (isRecent) {
     const mainParts = [];
     if (teamBadges) mainParts.push(teamBadges);
-    mainParts.push(getActorLogin(pr.author));
+    mainParts.push(author);
     mainParts.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${number}</a>`);
     mainParts.push(title);
     const mainContent = mainParts.join(' ');
-    return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}"><div class="pr-main-line">${timestamp} ${mainContent}</div></li>`;
+    return {
+      signature: `recent|${teamBadges}|${author}|${repository.name}|${number}|${title}`,
+      ageMarkup,
+      ageClass: '',
+      mainContent,
+      eventLines: '',
+    };
   }
 
   const { createdAt, reviews, comments, baseRefName, headRefOid, commits } = pr;
-  const author = getActorLogin(pr.author);
   const events = combineReviewsAndComments(reviews, comments);
   const commitState = getCommitState(headRefOid, commits);
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
@@ -654,12 +719,86 @@ const renderPR = (pr, {
   mainParts.push(title);
   const mainContent = mainParts.join(' ');
 
-  const mainLine = `<div class="pr-main-line ${ageClass}">${timestamp} ${mainContent}</div>`;
   const eventLines = events.length > 0
     ? `<div class="pr-event-lines">&nbsp;&nbsp;${events.map((event, eventIndex) => TimelineEvent({ ...event, key: eventIndex })).join('')}</div>`
     : '';
 
-  return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}">${mainLine}${eventLines}</li>`;
+  return {
+    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${eventLines}`,
+    ageMarkup,
+    ageClass,
+    mainContent,
+    eventLines,
+  };
+};
+
+const syncPRNode = (node, pr, presentation, index, isSelected, isRecent) => {
+  node.className = `pr-item${isSelected ? ' selected' : ''}`;
+  node.dataset.index = `${index}`;
+  node.dataset.url = pr.url;
+
+  if (node.dataset.signature !== presentation.signature) {
+    const mainLineClass = isRecent
+      ? 'pr-main-line'
+      : `pr-main-line ${presentation.ageClass}`;
+    node.innerHTML = `<div class="${mainLineClass}">${presentation.ageMarkup} ${presentation.mainContent}</div>${presentation.eventLines}`;
+    node.dataset.signature = presentation.signature;
+    return;
+  }
+
+  const ageEl = node.querySelector('.pr-age');
+  if (ageEl) {
+    const date = pr[isRecent ? 'committedDate' : 'createdAt'];
+    ageEl.textContent = formatCompactDistanceToNow(date);
+    ageEl.title = `${formatDistanceToNow(date)} (${date.toLocaleString()})`;
+  }
+
+  if (!isRecent) {
+    const mainLineEl = node.querySelector('.pr-main-line');
+    if (mainLineEl) {
+      mainLineEl.className = `pr-main-line ${presentation.ageClass}`;
+    }
+  }
+};
+
+const syncPRList = (listEl, displayPRs, {
+  isRecent = true,
+  showBranch = false,
+  showInlineTeamBadges = false,
+  teamBadgeCache = null,
+  selectedPrIndex = -1,
+} = {}) => {
+  const existingNodesByUrl = new Map(
+    Array.from(listEl.children).map((child) => [child.dataset.url, child])
+  );
+
+  let nextSibling = listEl.firstElementChild;
+
+  displayPRs.forEach((pr, index) => {
+    const presentation = getPRPresentation(pr, {
+      isRecent,
+      showBranch,
+      showInlineTeamBadges,
+      teamBadgeCache,
+    });
+    let node = existingNodesByUrl.get(pr.url);
+
+    if (!node) {
+      node = document.createElement('li');
+    } else {
+      existingNodesByUrl.delete(pr.url);
+    }
+
+    syncPRNode(node, pr, presentation, index, index === selectedPrIndex, isRecent);
+
+    if (node !== nextSibling) {
+      listEl.insertBefore(node, nextSibling);
+    }
+
+    nextSibling = node.nextElementSibling;
+  });
+
+  existingNodesByUrl.forEach((node) => node.remove());
 };
 
 const initialState = {
@@ -1088,14 +1227,13 @@ const render = () => {
       ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
       : count;
     recentPrHeader.innerHTML = buildSectionHeader('Pull requests', badge, 'MERGED');
-    recentPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, {
+    syncPRList(recentPrList, displayPRs, {
       isRecent: true,
       showBranch: false,
-      index,
-      isSelected: index === selectedPrIndex,
       showInlineTeamBadges,
       teamBadgeCache,
-    })).join('');
+      selectedPrIndex,
+    });
     document.title = `(${count}) PR Radiator`;
 
     recentPrView.classList.remove('hidden');
@@ -1118,14 +1256,13 @@ const render = () => {
     ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
     : count;
   openPrHeader.innerHTML = buildSectionHeader('Pull requests', badge, 'OPEN');
-  openPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, {
+  syncPRList(openPrList, displayPRs, {
     isRecent: false,
     showBranch: true,
-    index,
-    isSelected: index === selectedPrIndex,
     showInlineTeamBadges,
     teamBadgeCache,
-  })).join('');
+    selectedPrIndex,
+  });
   document.title = `(${count}) PR Radiator`;
 
   openPrView.classList.remove('hidden');

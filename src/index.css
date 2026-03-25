@@ -249,9 +249,11 @@ a {
   filter: brightness(1.2);
 }
 
+.failure .event-icon,
 .changes-requested .event-icon {
   color: red;
-  font-weight: bold;
+  transform: scale(1.08);
+  transform-origin: center;
 }
 
 .commented .event-icon,
