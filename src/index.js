@@ -12,6 +12,7 @@ const STORAGE_KEYS = {
 const GRAPHQL_REPO_BATCH_SIZE = 4;
 const RATE_LIMIT_COOLDOWN_THRESHOLD = 100;
 const RATE_LIMIT_RESET_BUFFER_MS = 1000;
+const STORAGE_WRITE_FRAME_DELAY = 16;
 
 const progressBar = document.getElementById('progress-bar');
 const repoRefreshStatus = document.getElementById('repo-refresh-status');
@@ -44,7 +45,6 @@ const parseStoredJSON = (key, fallback) => {
 
 const dedupeStrings = (values) => [...new Set(values.filter(Boolean))];
 const getActorLogin = (actor, fallback = 'unknown') => actor?.login || fallback;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const parseTeamInput = (value) => dedupeStrings(
   value
@@ -61,13 +61,22 @@ const getRepoTeamSlugs = (repoName) => state.config.repos
   .filter((team) => team.repos.includes(repoName))
   .map((team) => team.slug);
 
-const getVisibleTeamSlugs = (config = state.config, activeTeamSlug = state.activeTeamSlug) => activeTeamSlug
-  ? [activeTeamSlug]
-  : config.teams;
+const getVisibleRepos = (config = state.config, activeTeamSlug = state.activeTeamSlug) => {
+  const visibleTeamSlugs = new Set(activeTeamSlug ? [activeTeamSlug] : config.teams);
+  const visibleRepos = [];
+  const seenRepos = new Set();
 
-const getVisibleRepos = (config = state.config, activeTeamSlug = state.activeTeamSlug) => getAllReposFromMappings(
-  config.repos.filter((team) => getVisibleTeamSlugs(config, activeTeamSlug).includes(team.slug))
-);
+  config.repos.forEach((team) => {
+    if (!visibleTeamSlugs.has(team.slug) || !Array.isArray(team.repos)) return;
+    team.repos.forEach((repo) => {
+      if (seenRepos.has(repo)) return;
+      seenRepos.add(repo);
+      visibleRepos.push(repo);
+    });
+  });
+
+  return visibleRepos;
+};
 
 const getAllConfiguredRepos = (config = state.config) => getAllReposFromMappings(config.repos);
 
@@ -76,48 +85,26 @@ const shouldHideDependabotPRs = () => !state.showDependabotPRs && !state.showRec
 
 const isNeedsReviewFilterActive = () => state.showNeedsReviewPRs && !state.showRecentPRs && !state.showRepoLinks;
 
-const getDisplayPRs = () => {
-  const sourcePRs = state.showRecentPRs ? state.recentPRs : state.PRs;
-  const visibleTeamSlugs = new Set(getVisibleTeamSlugs());
-  const ignoredRepos = new Set(state.config.ignoreRepos);
-  const hideDependabot = shouldHideDependabotPRs();
-  const needsReviewOnly = isNeedsReviewFilterActive();
+let persistConfigFrame = 0;
+let pendingConfigPersist = null;
 
-  return sourcePRs.filter((pr) => {
-    if (!pr.teamSlugs.some((slug) => visibleTeamSlugs.has(slug))) return false;
-    if (ignoredRepos.has(pr.repository.name)) return false;
-    if (hideDependabot && getActorLogin(pr.author, '') === 'dependabot') return false;
-    if (needsReviewOnly && pr.reviewDecision !== 'REVIEW_REQUIRED' && pr.reviewDecision !== null) return false;
-    return true;
-  });
-};
+const flushPersistedConfig = () => {
+  persistConfigFrame = 0;
+  if (!pendingConfigPersist) return;
 
-const getTeamScopeLabel = () => {
-  const { teams } = state.config;
-  if (teams.length === 0) return '';
-  if (!state.activeTeamSlug) {
-    return teams.length === 1 ? `team: ${teams[0]}` : 'all teams';
-  }
-  return `team: ${state.activeTeamSlug}`;
-};
-
-const shouldShowInlineTeamBadges = () => state.config.teams.length > 1 && !state.activeTeamSlug;
-
-const renderTeamBadges = (teamSlugs = []) => {
-  if (!shouldShowInlineTeamBadges()) return '';
-  if (!teamSlugs.length) return '';
-  const badges = teamSlugs
-    .map((slug) => `<span class="team-badge" title="Team ${slug}">${slug}</span>`)
-    .join('');
-  return `<span class="team-badges">${badges}</span>`;
-};
-
-const persistConfig = (config) => {
+  const config = pendingConfigPersist;
+  pendingConfigPersist = null;
   localStorage.setItem(STORAGE_KEYS.owner, config.owner);
   localStorage.setItem(STORAGE_KEYS.token, config.token);
   localStorage.setItem(STORAGE_KEYS.teams, JSON.stringify(config.teams));
   localStorage.setItem(STORAGE_KEYS.repos, JSON.stringify(config.repos));
   localStorage.setItem(STORAGE_KEYS.ignoreRepos, JSON.stringify(config.ignoreRepos));
+};
+
+const persistConfig = (config) => {
+  pendingConfigPersist = config;
+  if (persistConfigFrame) return;
+  persistConfigFrame = window.setTimeout(flushPersistedConfig, STORAGE_WRITE_FRAME_DELAY);
 };
 
 const storedRepos = parseStoredJSON(STORAGE_KEYS.repos, []);
@@ -154,11 +141,11 @@ const innerRecentPRsQuery = `
   }
 `;
 
-const recentCommitHistoryFragment = `
+const buildRecentCommitHistoryFragment = (sinceDateTime) => `
   fragment RecentCommitHistory on Ref {
     target {
       ... on Commit {
-        history(first: 25, since: "%s") {
+        history(first: 25, since: "${sinceDateTime}") {
           nodes {
             committedDate
             messageHeadline
@@ -194,13 +181,13 @@ const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
 
   const batchedRepos = repos
     .map((repo) => {
-      const safeAlias = repo.replace(/[^a-zA-Z0-9]/g, '');
+      const safeAlias = repo.replace(/[^a-zA-Z0-9]/g, '_');
       return `${safeAlias}:repository(owner: "${owner}", name: "${repo}") { name ${innerQuery} }`;
     })
     .join(' ');
 
   if (type === 'recent') {
-    const fragmentPart = recentCommitHistoryFragment.replace('%s', sinceDateTime);
+    const fragmentPart = buildRecentCommitHistoryFragment(sinceDateTime);
     return `
       ${fragmentPart}
 
@@ -274,8 +261,6 @@ const api = {
       });
       hasNextPage = repositories.pageInfo.hasNextPage;
       next = repositories.pageInfo.endCursor;
-
-      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
     return repoNames;
@@ -488,12 +473,14 @@ const refreshAllTeamRepos = async (configOverride = state.config) => {
   }
 };
 
-const CommentDots = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M256 32C114.6 32 0 125.1 0 240c0 49.6 21.4 95 57 130.7C44.5 421.1 2.7 466 2.2 466.5c-2.2 2.3-2.8 5.7-1.5 8.7S4.8 480 8 480c66.3 0 116-31.8 140.6-51.4 32.7 12.3 69 19.4 107.4 19.4 141.4 0 256-93.1 256-208S397.4 32 256 32zM128 272c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32zm128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32zm128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32z" /></svg>`;
-const HourglassHalf = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 384 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M360 0H24C10.745 0 0 10.745 0 24v16c0 13.255 10.745 24 24 24 0 90.965 51.016 167.734 120.842 192C75.016 280.266 24 357.035 24 448c-13.255 0-24 10.745-24 24v16c0 13.255 10.745 24 24 24h336c13.255 0 24-10.745 24-24v-16c0-13.255-10.745-24-24-24 0-90.965-51.016-167.734-120.842-192C308.984 231.734 360 154.965 360 64c13.255 0 24-10.745 24-24V24c0-13.255-10.745-24-24-24zm-75.078 384H99.08c17.059-46.797 52.096-80 92.92-80 40.821 0 75.862 33.196 92.922 80zm.019-256H99.078C91.988 108.548 88 86.748 88 64h208c0 22.805-3.987 44.587-11.059 64z" /></svg>`;
-const Minus = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M3 13h18v-2H3v2z" /></svg>`;
-const Times = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 352 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M242.72 256l100.07-100.07c12.28-12.28 12.28-32.19 0-44.48l-22.24-22.24c-12.28-12.28-32.19-12.28-44.48 0L176 189.28 75.93 89.21c-12.28-12.28-32.19-12.28-44.48 0L9.21 111.45c-12.28 12.28-12.28 32.19 0 44.48L109.28 256 9.21 356.07c-12.28 12.28-12.28 32.19 0 44.48l22.24 22.24c12.28 12.28 32.2 12.28 44.48 0L176 322.72l100.07 100.07c12.28 12.28 32.2 12.28 44.48 0l22.24-22.24c12.28-12.28 12.28-32.19 0-44.48L242.72 256z" /></svg>`;
-const Check = () => `<svg stroke="currentColor" fill="currentColor" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M173.898 439.404l-166.4-166.4c-9.997-9.997-9.997-26.206 0-36.204l36.203-36.204c9.997-9.998 26.207-9.998 36.204 0L192 312.69 432.095 72.596c9.997-9.997 26.207-9.997 36.204 0l36.203 36.204c9.997 9.997 9.997 26.206 0 36.204l-294.4 294.401c-9.998 9.997-26.207 9.997-36.204-.001z" /></svg>`;
-const ExclamationTriangle = () => `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" /></svg>`;
+const ICONS = {
+  commentDots: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M256 32C114.6 32 0 125.1 0 240c0 49.6 21.4 95 57 130.7C44.5 421.1 2.7 466 2.2 466.5c-2.2 2.3-2.8 5.7-1.5 8.7S4.8 480 8 480c66.3 0 116-31.8 140.6-51.4 32.7 12.3 69 19.4 107.4 19.4 141.4 0 256-93.1 256-208S397.4 32 256 32zM128 272c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32zm128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32zm128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32z" /></svg>`,
+  hourglass: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 384 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M360 0H24C10.745 0 0 10.745 0 24v16c0 13.255 10.745 24 24 24 0 90.965 51.016 167.734 120.842 192C75.016 280.266 24 357.035 24 448c-13.255 0-24 10.745-24 24v16c0 13.255 10.745 24 24 24h336c13.255 0 24-10.745 24-24v-16c0-13.255-10.745-24-24-24 0-90.965-51.016-167.734-120.842-192C308.984 231.734 360 154.965 360 64c13.255 0 24-10.745 24-24V24c0-13.255-10.745-24-24-24zm-75.078 384H99.08c17.059-46.797 52.096-80 92.92-80 40.821 0 75.862 33.196 92.922 80zm.019-256H99.078C91.988 108.548 88 86.748 88 64h208c0 22.805-3.987 44.587-11.059 64z" /></svg>`,
+  minus: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M3 13h18v-2H3v2z" /></svg>`,
+  times: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 352 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M242.72 256l100.07-100.07c12.28-12.28 12.28-32.19 0-44.48l-22.24-22.24c-12.28-12.28-32.19-12.28-44.48 0L176 189.28 75.93 89.21c-12.28-12.28-32.19-12.28-44.48 0L9.21 111.45c-12.28 12.28-12.28 32.19 0 44.48L109.28 256 9.21 356.07c-12.28-12.28-12.28-32.19 0-44.48l22.24-22.24c12.28-12.28 32.2-12.28 44.48 0L176 322.72l100.07 100.07c12.28 12.28 32.2 12.28 44.48 0l22.24-22.24c12.28-12.28 12.28-32.19 0-44.48L242.72 256z" /></svg>`,
+  check: `<svg stroke="currentColor" fill="currentColor" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M173.898 439.404l-166.4-166.4c-9.997-9.997-9.997-26.206 0-36.204l36.203-36.204c9.997-9.998 26.207-9.998 36.204 0L192 312.69 432.095 72.596c9.997-9.997 26.207-9.997 36.204 0l36.203 36.204c9.997 9.997 9.997 26.206 0 36.204l-294.4 294.401c-9.998 9.997-26.207 9.997-36.204-.001z" /></svg>`,
+  warning: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" /></svg>`,
+};
 const combineReviewsAndComments = (reviews, comments) => {
   const events = [];
 
@@ -543,15 +530,15 @@ const getCommitState = (headRefOid, commits) => {
   const node = commits.nodes.find((currentNode) => currentNode.commit.oid === headRefOid);
 
   const icons = {
-    SUCCESS: Check(),
-    PENDING: HourglassHalf(),
-    FAILURE: Times(),
-    EXPECTED: HourglassHalf(),
-    ERROR: ExclamationTriangle(),
+    SUCCESS: ICONS.check,
+    PENDING: ICONS.hourglass,
+    FAILURE: ICONS.times,
+    EXPECTED: ICONS.hourglass,
+    ERROR: ICONS.warning,
   };
 
   const conclusion = node?.commit?.statusCheckRollup?.state || 'ERROR';
-  const icon = icons[conclusion] || Minus();
+  const icon = icons[conclusion] || ICONS.minus;
   const className = conclusion.toLowerCase();
 
   return `<span class="${className}">${icon}</span>`;
@@ -564,19 +551,19 @@ const TimelineEvent = ({ count, author, createdAt, state: eventState }) => {
   let tooltip = `${authorWithCount} ${eventState.toLowerCase()} at ${formattedDate}`;
 
   if (eventState === 'APPROVED') {
-    return `<span class="event-group approved" title="${tooltip}">${authorWithCount}${Check()}</span>`;
+    return `<span class="event-group approved" title="${tooltip}">${authorWithCount}${ICONS.check}</span>`;
   }
   if (eventState === 'CHANGES_REQUESTED') {
     tooltip = `${authorWithCount} requested changes at ${formattedDate}`;
-    return `<span class="event-group changes-requested" title="${tooltip}">${authorWithCount}${Times()}</span>`;
+    return `<span class="event-group changes-requested" title="${tooltip}">${authorWithCount}${ICONS.times}</span>`;
   }
   if (eventState === 'COMMENTED') {
     tooltip = `${authorWithCount} commented at ${formattedDate}`;
-    return `<span class="event-group commented" title="${tooltip}">${authorWithCount}${CommentDots()}</span>`;
+    return `<span class="event-group commented" title="${tooltip}">${authorWithCount}${ICONS.commentDots}</span>`;
   }
   if (eventState === 'DISMISSED') {
     tooltip = `${authorWithCount} dismissed at ${formattedDate}`;
-    return `<span class="event-group dismissed" title="${tooltip}">${authorWithCount}${Minus()}</span>`;
+    return `<span class="event-group dismissed" title="${tooltip}">${authorWithCount}${ICONS.minus}</span>`;
   }
   return '';
 };
@@ -615,15 +602,14 @@ const formatCompactDistanceToNow = (date) => {
   return `${years}y`;
 };
 
-const joinInlineParts = (parts) => parts.filter(Boolean).join(' ');
-
-const renderHeaderSummary = (summaries) => {
-  const visibleSummaries = summaries.filter(Boolean);
-  if (visibleSummaries.length === 0) return '';
-  return `<span class="view-summary">— ${visibleSummaries.join(' | ')}</span>`;
-};
-
-const renderPR = (pr, isRecent = true, showBranch = false, index = 0, isSelected = false) => {
+const renderPR = (pr, {
+  isRecent = true,
+  showBranch = false,
+  index = 0,
+  isSelected = false,
+  showInlineTeamBadges = false,
+  teamBadgeCache = null,
+} = {}) => {
   const { number, title, url, repository, teamSlugs = [] } = pr;
   const dateKey = isRecent ? 'committedDate' : 'createdAt';
   const date = pr[dateKey];
@@ -631,16 +617,24 @@ const renderPR = (pr, isRecent = true, showBranch = false, index = 0, isSelected
   const elapsedTimeTitle = `${formatDistanceToNow(date)} (${date.toLocaleString()})`;
   const id = `pr-time-${pr.url}`;
   const selectedClass = isSelected ? 'selected' : '';
-  const teamBadges = renderTeamBadges(teamSlugs);
+  let teamBadges = '';
+  if (showInlineTeamBadges && teamSlugs.length > 0) {
+    const badgeKey = teamSlugs.join('|');
+    teamBadges = teamBadgeCache?.get(badgeKey) || '';
+    if (!teamBadges) {
+      teamBadges = `<span class="team-badges">${teamSlugs.map((slug) => `<span class="team-badge" title="Team ${slug}">${slug}</span>`).join('')}</span>`;
+      teamBadgeCache?.set(badgeKey, teamBadges);
+    }
+  }
   const timestamp = `<span id="${id}" class="pr-age" title="${elapsedTimeTitle}">${elapsedTimeStr}</span>`;
 
   if (isRecent) {
-    const mainContent = joinInlineParts([
-      teamBadges,
-      getActorLogin(pr.author),
-      `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${number}</a>`,
-      title,
-    ]);
+    const mainParts = [];
+    if (teamBadges) mainParts.push(teamBadges);
+    mainParts.push(getActorLogin(pr.author));
+    mainParts.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${number}</a>`);
+    mainParts.push(title);
+    const mainContent = mainParts.join(' ');
     return `<li class="pr-item ${selectedClass}" data-index="${index}" data-url="${url}"><div class="pr-main-line">${timestamp} ${mainContent}</div></li>`;
   }
 
@@ -651,14 +645,14 @@ const renderPR = (pr, isRecent = true, showBranch = false, index = 0, isSelected
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
   const branch = showBranch ? baseRefName : '';
   const ageClass = getAgeString(createdAt);
-  const mainContent = joinInlineParts([
-    teamBadges,
-    commitState,
-    branch,
-    author,
-    prLink,
-    title,
-  ]);
+  const mainParts = [];
+  if (teamBadges) mainParts.push(teamBadges);
+  mainParts.push(commitState);
+  if (branch) mainParts.push(branch);
+  mainParts.push(author);
+  mainParts.push(prLink);
+  mainParts.push(title);
+  const mainContent = mainParts.join(' ');
 
   const mainLine = `<div class="pr-main-line ${ageClass}">${timestamp} ${mainContent}</div>`;
   const eventLines = events.length > 0
@@ -696,10 +690,15 @@ const initialState = {
 };
 
 let state = { ...initialState };
-let rateLimitResetTimer = null;
+const renderCache = {
+  visibleRepos: [],
+  displayPRs: [],
+  mode: '',
+  shortcutsOverlayHeight: 0,
+};
 
 const getActiveGitHubRateLimit = (rateLimit = state.githubRateLimit) => {
-  if (!rateLimit?.resetAt || rateLimit.resetAt <= Date.now()) {
+  if (!rateLimit?.resetAt || rateLimit.resetAt <= (Date.now() + RATE_LIMIT_RESET_BUFFER_MS)) {
     return {
       ...rateLimit,
       resetAt: null,
@@ -746,19 +745,6 @@ const updateGitHubRateLimit = (updates) => {
     && currentRateLimit.isCoolingDown === nextRateLimit.isCoolingDown
   ) {
     return;
-  }
-
-  if (rateLimitResetTimer) {
-    clearTimeout(rateLimitResetTimer);
-    rateLimitResetTimer = null;
-  }
-
-  if (nextRateLimit.isCoolingDown && nextRateLimit.resetAt) {
-    const waitMs = Math.max(0, nextRateLimit.resetAt - Date.now() + RATE_LIMIT_RESET_BUFFER_MS);
-    rateLimitResetTimer = window.setTimeout(() => {
-      rateLimitResetTimer = null;
-      updateGitHubRateLimit({ remaining: null, resetAt: null, isCoolingDown: false });
-    }, waitMs);
   }
 
   setState({ githubRateLimit: nextRateLimit });
@@ -871,7 +857,41 @@ const updateShortcutsOverlayLayout = () => {
     return;
   }
 
-  document.body.style.setProperty('--shortcuts-overlay-height', `${shortcutsOverlay.offsetHeight}px`);
+  if (!renderCache.shortcutsOverlayHeight) {
+    renderCache.shortcutsOverlayHeight = shortcutsOverlay.offsetHeight;
+  }
+  document.body.style.setProperty('--shortcuts-overlay-height', `${renderCache.shortcutsOverlayHeight}px`);
+};
+
+const updateSelectedListItem = (listElement, itemClassName, oldIndex, nextIndex) => {
+  if (!listElement || oldIndex === nextIndex) return;
+
+  if (oldIndex >= 0) {
+    listElement.querySelector(`.${itemClassName}[data-index="${oldIndex}"]`)?.classList.remove('selected');
+  }
+
+  if (nextIndex >= 0) {
+    const nextEl = listElement.querySelector(`.${itemClassName}[data-index="${nextIndex}"]`);
+    if (nextEl) {
+      nextEl.classList.add('selected');
+      listElement.focus();
+      nextEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }
+};
+
+const updateSelectionState = (indexKey, nextIndex) => {
+  if (state[indexKey] === nextIndex) return;
+
+  const oldIndex = state[indexKey];
+  state = { ...state, [indexKey]: nextIndex };
+
+  if (indexKey === 'selectedRepoIndex') {
+    updateSelectedListItem(repoList, 'repo-item', oldIndex, nextIndex);
+    return;
+  }
+
+  updateSelectedListItem(state.showRecentPRs ? recentPrList : openPrList, 'pr-item', oldIndex, nextIndex);
 };
 
 const canRefreshConfig = (config) => Boolean(config.token && config.owner && config.teams.length > 0);
@@ -958,8 +978,19 @@ const render = () => {
     showRepoLinks,
   } = state;
   const visibleRepos = getVisibleRepos();
-  const scopeLabel = getTeamScopeLabel();
+  const scopeLabel = teams.length === 0
+    ? ''
+    : state.activeTeamSlug
+      ? `team: ${state.activeTeamSlug}`
+      : teams.length === 1
+        ? `team: ${teams[0]}`
+        : 'all teams';
+  const showInlineTeamBadges = teams.length > 1 && !state.activeTeamSlug;
+  const teamBadgeCache = new Map();
   document.title = 'PR Radiator';
+  renderCache.visibleRepos = visibleRepos;
+  renderCache.displayPRs = [];
+  renderCache.mode = '';
 
   if (!token || !owner || teams.length === 0) {
     openSettings();
@@ -984,19 +1015,32 @@ const render = () => {
   if (showRepoLinks) {
     repoView.classList.remove('hidden');
     prView.classList.add('hidden');
+    renderCache.mode = 'repos';
 
     const badgeEl = `(${visibleRepos.length})`;
-    const summaryEl = renderHeaderSummary([scopeLabel]);
+    const summaryEl = scopeLabel ? `<span class="view-summary">— ${scopeLabel}</span>` : '';
     repoHeader.innerHTML = `Repositories ${badgeEl}${summaryEl ? ` ${summaryEl}` : ''}`;
 
-      repoList.innerHTML = visibleRepos.map((repo, index) => {
-        const isIgnored = isRepoIgnored(repo);
-        const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
-        return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${renderTeamBadges(getRepoTeamSlugs(repo))}<a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener noreferrer">${repo}</a></li>`;
-      }).join('');
+    repoList.innerHTML = visibleRepos.map((repo, index) => {
+      const isIgnored = isRepoIgnored(repo);
+      const classes = `repo-item ${isIgnored ? 'ignored' : ''} ${index === selectedRepoIndex ? 'selected' : ''}`;
+      let teamBadges = '';
+      if (showInlineTeamBadges) {
+        const teamSlugs = getRepoTeamSlugs(repo);
+        if (teamSlugs.length > 0) {
+          const badgeKey = teamSlugs.join('|');
+          teamBadges = teamBadgeCache.get(badgeKey) || '';
+          if (!teamBadges) {
+            teamBadges = `<span class="team-badges">${teamSlugs.map((slug) => `<span class="team-badge" title="Team ${slug}">${slug}</span>`).join('')}</span>`;
+            teamBadgeCache.set(badgeKey, teamBadges);
+          }
+        }
+      }
+      return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${teamBadges}<a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener noreferrer">${repo}</a></li>`;
+    }).join('');
 
-      if (selectedRepoIndex >= 0) {
-        repoList.focus();
+    if (selectedRepoIndex >= 0) {
+      repoList.focus();
       setTimeout(() => {
         const selectedItem = repoList.querySelector('.repo-item.selected');
         if (selectedItem) {
@@ -1010,25 +1054,48 @@ const render = () => {
   repoView.classList.add('hidden');
   prView.classList.remove('hidden');
 
-  const sectionHeader = (title, badgeContent = null, prState = '') => {
-    const summaryEl = renderHeaderSummary([
-      prState ? prState.toLowerCase() : '',
-      scopeLabel,
-      isDependabotFilterActive() ? '+dependabot' : '',
-      isNeedsReviewFilterActive() ? 'awaiting review' : '',
-    ]);
-    const badgeEl = badgeContent !== null ? `(${badgeContent})` : '';
-    return `${title} ${badgeEl}${summaryEl ? ` ${summaryEl}` : ''}`;
+  const sourcePRs = state.showRecentPRs ? state.recentPRs : state.PRs;
+  const visibleTeamSlugs = new Set(state.activeTeamSlug ? [state.activeTeamSlug] : teams);
+  const ignoredRepos = new Set(state.config.ignoreRepos);
+  const hideDependabot = shouldHideDependabotPRs();
+  const needsReviewOnly = isNeedsReviewFilterActive();
+  const displayPRs = [];
+
+  sourcePRs.forEach((pr) => {
+    if (!pr.teamSlugs.some((slug) => visibleTeamSlugs.has(slug))) return;
+    if (ignoredRepos.has(pr.repository.name)) return;
+    if (hideDependabot && getActorLogin(pr.author, '') === 'dependabot') return;
+    if (needsReviewOnly && pr.reviewDecision !== 'REVIEW_REQUIRED' && pr.reviewDecision !== null) return;
+    displayPRs.push(pr);
+  });
+
+  renderCache.displayPRs = displayPRs;
+  renderCache.mode = state.showRecentPRs ? 'recent-prs' : 'open-prs';
+
+  const buildSectionHeader = (title, badgeContent, prState) => {
+    const summaryParts = [];
+    if (prState) summaryParts.push(prState.toLowerCase());
+    if (scopeLabel) summaryParts.push(scopeLabel);
+    if (isDependabotFilterActive()) summaryParts.push('+dependabot');
+    if (isNeedsReviewFilterActive()) summaryParts.push('awaiting review');
+    const summaryEl = summaryParts.length > 0 ? `<span class="view-summary">— ${summaryParts.join(' | ')}</span>` : '';
+    return `${title} (${badgeContent})${summaryEl ? ` ${summaryEl}` : ''}`;
   };
 
   if (state.showRecentPRs) {
-    const displayPRs = getDisplayPRs();
     const count = displayPRs.length;
     const badge = state.isFetchingRecentPRs
-      ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
+      ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
       : count;
-    recentPrHeader.innerHTML = sectionHeader('Pull requests', badge, 'MERGED');
-    recentPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, true, false, index, index === selectedPrIndex)).join('');
+    recentPrHeader.innerHTML = buildSectionHeader('Pull requests', badge, 'MERGED');
+    recentPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, {
+      isRecent: true,
+      showBranch: false,
+      index,
+      isSelected: index === selectedPrIndex,
+      showInlineTeamBadges,
+      teamBadgeCache,
+    })).join('');
     document.title = `(${count}) PR Radiator`;
 
     recentPrView.classList.remove('hidden');
@@ -1046,13 +1113,19 @@ const render = () => {
     return;
   }
 
-  const displayPRs = getDisplayPRs();
   const count = displayPRs.length;
   const badge = state.isFetchingOpenPRs
-    ? `<span class="fetching-spinner">${HourglassHalf()}</span>`
+    ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
     : count;
-  openPrHeader.innerHTML = sectionHeader('Pull requests', badge, 'OPEN');
-  openPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, false, true, index, index === selectedPrIndex)).join('');
+  openPrHeader.innerHTML = buildSectionHeader('Pull requests', badge, 'OPEN');
+  openPrList.innerHTML = displayPRs.map((pr, index) => renderPR(pr, {
+    isRecent: false,
+    showBranch: true,
+    index,
+    isSelected: index === selectedPrIndex,
+    showInlineTeamBadges,
+    teamBadgeCache,
+  })).join('');
   document.title = `(${count}) PR Radiator`;
 
   openPrView.classList.remove('hidden');
@@ -1154,21 +1227,21 @@ const init = async () => {
         case 'ArrowDown':
           if (items.length > 0) {
             const newIndex = currentIndex < 0 ? 0 : Math.min(items.length - 1, currentIndex + 1);
-            setState({ [indexKey]: newIndex });
+            updateSelectionState(indexKey, newIndex);
           }
           break;
         case 'k':
         case 'ArrowUp':
           if (items.length > 0) {
             const newIndex = currentIndex < 0 ? 0 : Math.max(0, currentIndex - 1);
-            setState({ [indexKey]: newIndex });
+            updateSelectionState(indexKey, newIndex);
           }
           break;
         case 'g': {
           const now = Date.now();
           if (lastKeyPress.key === 'g' && (now - lastKeyPress.timestamp) < 500) {
             if (items.length > 0) {
-              setState({ [indexKey]: 0 });
+              updateSelectionState(indexKey, 0);
             }
             lastKeyPress = { key: null, timestamp: 0 };
           } else {
@@ -1178,7 +1251,7 @@ const init = async () => {
         }
         case 'G':
           if (items.length > 0) {
-            setState({ [indexKey]: items.length - 1 });
+            updateSelectionState(indexKey, items.length - 1);
           }
           break;
         case 'Enter':
@@ -1197,7 +1270,7 @@ const init = async () => {
     };
 
     if (showRepoLinks) {
-      const visibleRepos = getVisibleRepos();
+      const visibleRepos = renderCache.visibleRepos;
       const handled = handleNavigation(
         visibleRepos,
         state.selectedRepoIndex,
@@ -1222,7 +1295,7 @@ const init = async () => {
     }
 
     if (!showRepoLinks) {
-      const displayPRs = getDisplayPRs();
+      const displayPRs = renderCache.displayPRs;
       const handled = handleNavigation(
         displayPRs,
         state.selectedPrIndex,
@@ -1300,7 +1373,11 @@ const init = async () => {
       },
       c: () => openSettings(),
       '?': () => {
-        shortcutsOverlay.style.display = shortcutsOverlay.style.display === 'none' ? 'block' : 'none';
+        const opening = shortcutsOverlay.style.display === 'none';
+        shortcutsOverlay.style.display = opening ? 'block' : 'none';
+        if (!opening) {
+          renderCache.shortcutsOverlayHeight = 0;
+        }
         updateShortcutsOverlayLayout();
       },
     };

@@ -5,8 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "vite",
-    "build": "vite build",
-    "lint": "eslint ."
+    "build": "vite build"
   },
   "devDependencies": {
     "vite": "^7.1.11"
