@@ -31,7 +31,7 @@ const de=(e,t)=>e.createdAt.getTime()-t.createdAt.getTime(),Pe=(e,t)=>t.committe
       }
     }
   }
-`,st="pullRequests(last: 15, states: OPEN) { nodes {title url createdAt baseRefName headRefOid isDraft number author { login } comments (first: 50) {nodes {createdAt author { login }}} reviews(first: 50) {nodes {state createdAt author { login }}} commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}}} reviewDecision }}",ot=(e,t,s,n="")=>{let i;e==="recent"?i=et.replace("%s",n):i=st;const r=s.map(a=>`${a.replace(/[^a-zA-Z0-9]/g,"_")}:repository(owner: "${t}", name: "${a}") { name ${i} }`).join(" ");return e==="recent"?`
+`,st="pullRequests(last: 15, states: OPEN) { nodes {title url createdAt baseRefName headRefOid isDraft number author { login } comments (first: 5) {nodes {createdAt author { login }}} reviews(first: 15) {nodes {state createdAt author { login }}} commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}}} reviewDecision }}",ot=(e,t,s,n="")=>{let i;e==="recent"?i=et.replace("%s",n):i=st;const r=s.map(a=>`${a.replace(/[^a-zA-Z0-9]/g,"_")}:repository(owner: "${t}", name: "${a}") { name ${i} }`).join(" ");return e==="recent"?`
       ${tt(n)}
 
       query ${e}PRs {

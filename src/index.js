@@ -169,7 +169,7 @@ const buildRecentCommitHistoryFragment = (sinceDateTime) => `
   }
 `;
 
-const innerOpenPRsQuery = `pullRequests(last: 15, states: OPEN) { nodes {title url createdAt baseRefName headRefOid isDraft number author { login } comments (first: 50) {nodes {createdAt author { login }}} reviews(first: 50) {nodes {state createdAt author { login }}} commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}}} reviewDecision }}`;
+const innerOpenPRsQuery = `pullRequests(last: 15, states: OPEN) { nodes {title url createdAt baseRefName headRefOid isDraft number author { login } comments (first: 5) {nodes {createdAt author { login }}} reviews(first: 15) {nodes {state createdAt author { login }}} commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}}} reviewDecision }}`;
 
 const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
   let innerQuery;
