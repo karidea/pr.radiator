@@ -1,5 +1,5 @@
 const sortByCreatedAt = (a, b) => a.createdAt.getTime() - b.createdAt.getTime();
-const byCommittedDateDesc = (a, b) => b.committedDate.getTime() - a.committedDate.getTime();
+const sortByCommittedDateDesc = (a, b) => b.committedDate.getTime() - a.committedDate.getTime();
 
 const STORAGE_KEYS = {
   token: 'PR_RADIATOR_TOKEN',
@@ -11,6 +11,7 @@ const STORAGE_KEYS = {
 };
 
 const GRAPHQL_REPO_BATCH_SIZE = 2;
+const DISCOVERY_BATCH_SIZE = 4;
 const RATE_LIMIT_COOLDOWN_THRESHOLD = 100;
 const RATE_LIMIT_RESET_BUFFER_MS = 1000;
 const STORAGE_WRITE_FRAME_DELAY = 16;
@@ -49,6 +50,8 @@ const getActorLogin = (actor, fallback = 'unknown') => actor?.login || fallback;
 const shouldLogGraphQLCost = () => window.location.hostname === 'localhost'
   || localStorage.getItem(STORAGE_KEYS.graphqlCostDebug) === 'true';
 const formatTiming = (ms) => `${Math.round(ms)}ms`;
+const GRAPHQL_ALIAS_CHARS = 'abcdefghijklmnopqrstuvwxyz';
+const getShortGraphQLAlias = (index) => GRAPHQL_ALIAS_CHARS[index] || `a${index.toString(36)}`;
 
 const parseTeamInput = (value) => dedupeStrings(
   value
@@ -136,109 +139,92 @@ const RepositoriesQuery = (owner, team, next) => {
   return `{organization(login: "${owner}") {team(slug: "${team}") {repositories(first: 100, after: ${after}) {totalCount pageInfo {endCursor hasNextPage} edges {permission node {name isArchived}}}}}}`;
 };
 
-const innerRecentPRsQuery = `
-  mainRef: ref(qualifiedName: "refs/heads/main") {
-    ...RecentCommitHistory
-  }
-  masterRef: ref(qualifiedName: "refs/heads/master") {
-    ...RecentCommitHistory
-  }
-`;
+const innerRecentPRsQuery = 'mainRef:ref(qualifiedName:"refs/heads/main"){...R} masterRef:ref(qualifiedName:"refs/heads/master"){...R}';
 
-const buildRecentCommitHistoryFragment = (sinceDateTime) => `
-  fragment RecentCommitHistory on Ref {
-    target {
-      ... on Commit {
-        history(first: 25, since: "${sinceDateTime}") {
-          nodes {
-            committedDate
-            messageHeadline
-            parents {
-              totalCount
-            }
-            associatedPullRequests(first: 5) {
-              nodes {
-                createdAt
-                number
-                title
-                url
-                author { login }
-                repository { name }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
+const buildRecentCommitHistoryFragment = (sinceDateTime) => `fragment R on Ref{target{... on Commit{history(first:25,since:"${sinceDateTime}"){nodes{committedDate messageHeadline parents{totalCount} associatedPullRequests(first:5){nodes{createdAt number title url author{login} repository{name}}}}}}}}`;
 
-const innerOpenPRsQuery = `pullRequests(last: 15, states: OPEN) { nodes {title url createdAt baseRefName headRefOid isDraft number author { login } comments (first: 5) {nodes {createdAt author { login }}} reviews(first: 15) {nodes {state createdAt author { login }}} commits(last: 1) { nodes { commit { oid statusCheckRollup { state }}}} reviewDecision }}`;
-const graphqlCostFragment = 'rateLimit { cost remaining resetAt }';
+const innerOpenPRDiscoveryQuery = 'pullRequests(last:15,states:OPEN){nodes{number updatedAt commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}';
+const openPRHydrationFields = 'title url createdAt updatedAt baseRefName headRefOid isDraft number author{login} comments(first:5){nodes{createdAt author{login}}} reviews(first:15){nodes{state createdAt author{login}}} commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewDecision';
+const graphqlCostFragment = 'rateLimit{cost remaining resetAt}';
 
-const buildBatchQuery = (type, owner, repos, sinceDateTime = '') => {
-  let innerQuery;
-  if (type === 'recent') {
-    innerQuery = innerRecentPRsQuery.replace('%s', sinceDateTime);
-  } else {
-    innerQuery = innerOpenPRsQuery;
-  }
-
+const buildDiscoveryQuery = (owner, repos) => {
   const batchedRepos = repos
-    .map((repo) => {
-      const safeAlias = repo.replace(/[^a-zA-Z0-9]/g, '_');
-      return `${safeAlias}:repository(owner: "${owner}", name: "${repo}") { name ${innerQuery} }`;
-    })
+    .map((repo, index) => `${getShortGraphQLAlias(index)}:repository(owner:"${owner}",name:"${repo}"){${innerOpenPRDiscoveryQuery}}`)
     .join(' ');
-
-  if (type === 'recent') {
-    const fragmentPart = buildRecentCommitHistoryFragment(sinceDateTime);
-    return `
-      ${fragmentPart}
-
-      query ${type}PRs {
-        ${graphqlCostFragment}
-        ${batchedRepos}
-      }
-    `;
-  }
-
-  return `query ${type}PRs { ${graphqlCostFragment} ${batchedRepos} }`;
+  return `query{${graphqlCostFragment} ${batchedRepos}}`;
 };
 
-const api = {
-  fetchBatchQueries: async (token, type, owner, repos, sinceDateTime) => {
-    const repoChunks = Array.from(
-      { length: Math.ceil(repos.length / GRAPHQL_REPO_BATCH_SIZE) },
-      (_, index) => repos.slice(index * GRAPHQL_REPO_BATCH_SIZE, (index + 1) * GRAPHQL_REPO_BATCH_SIZE)
-    );
+const buildRecentQuery = (owner, repos, sinceDateTime) => {
+  const fragmentPart = buildRecentCommitHistoryFragment(sinceDateTime);
+  const batchedRepos = repos
+    .map((repo, index) => `${getShortGraphQLAlias(index)}:repository(owner:"${owner}",name:"${repo}"){${innerRecentPRsQuery}}`)
+    .join(' ');
+  return `${fragmentPart} query{${graphqlCostFragment} ${batchedRepos}}`;
+};
 
-    return Promise.all(repoChunks.map((reposChunk) => api.fetchGraphQL(
-      token,
-      buildBatchQuery(type, owner, reposChunk, sinceDateTime),
-      { type }
-    )));
+const buildHydrationQuery = (owner, repoRequests) => {
+  const batchedRepos = repoRequests.map(({ repoName, numbers }, repoIndex) => {
+    const prQueries = numbers
+      .map((number, prIndex) => `${getShortGraphQLAlias(prIndex)}:pullRequest(number:${number}){${openPRHydrationFields}}`)
+      .join(' ');
+    return `${getShortGraphQLAlias(repoIndex)}:repository(owner:"${owner}",name:"${repoName}"){${prQueries}}`;
+  }).join(' ');
+  return `query{${graphqlCostFragment} ${batchedRepos}}`;
+};
+
+const chunkArray = (items, size) => Array.from(
+  { length: Math.ceil(items.length / size) },
+  (_, index) => items.slice(index * size, (index + 1) * size)
+);
+
+const api = {
+  fetchDiscoveryBatches: async (token, owner, repos) => {
+    const chunks = chunkArray(repos, DISCOVERY_BATCH_SIZE);
+    return Promise.all(chunks.map(async (chunk) => {
+      const payload = await api.fetchGraphQL(token, buildDiscoveryQuery(owner, chunk), { type: 'open-discovery' });
+      return { payload, repos: chunk };
+    }));
+  },
+  fetchRecentBatches: async (token, owner, repos, sinceDateTime) => {
+    const chunks = chunkArray(repos, GRAPHQL_REPO_BATCH_SIZE);
+    return Promise.all(chunks.map(async (chunk) => ({
+      payload: await api.fetchGraphQL(token, buildRecentQuery(owner, chunk, sinceDateTime), { type: 'recent' }),
+      repos: chunk,
+    })));
+  },
+  fetchHydrationBatches: async (token, owner, repoRequests) => {
+    const chunks = chunkArray(repoRequests, GRAPHQL_REPO_BATCH_SIZE);
+    return Promise.all(chunks.map(async (chunk) => ({
+      payload: await api.fetchGraphQL(token, buildHydrationQuery(owner, chunk), { type: 'open-hydrate' }),
+      repoRequests: chunk,
+    })));
   },
   fetchGraphQL: async (token, query, { type = 'graphql' } = {}) => {
     if (shouldPauseGitHubRefresh()) {
       throw new Error(getGitHubRateLimitPauseMessage());
     }
 
-    const requestStartedAt = performance.now();
+    const startedAt = performance.now();
     const response = await fetch('https://api.github.com/graphql', {
-      method: 'post',
-      headers: { Authorization: `Bearer ${token}` },
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({ query }),
     });
     const responseReceivedAt = performance.now();
+    const payload = await response.json();
+    const payloadParsedAt = performance.now();
+    const networkMs = responseReceivedAt - startedAt;
+    const parseMs = payloadParsedAt - responseReceivedAt;
+    const totalMs = payloadParsedAt - startedAt;
 
     const rateLimit = getGitHubRateLimitFromHeaders(response.headers);
     if (rateLimit) {
       updateGitHubRateLimit(rateLimit);
     }
 
-    const payload = await response.json();
-    const payloadParsedAt = performance.now();
     const graphQLRateLimit = payload?.data?.rateLimit;
     if (graphQLRateLimit) {
       const resetAt = graphQLRateLimit.resetAt ? Date.parse(graphQLRateLimit.resetAt) : null;
@@ -250,14 +236,24 @@ const api = {
 
       if (shouldLogGraphQLCost()) {
         console.log(
-          `[GraphQL ${type}] network: ${formatTiming(responseReceivedAt - requestStartedAt)} | parse: ${formatTiming(payloadParsedAt - responseReceivedAt)} | total: ${formatTiming(payloadParsedAt - requestStartedAt)} | cost: ${graphQLRateLimit.cost} | remaining: ${graphQLRateLimit.remaining} | reset: ${graphQLRateLimit.resetAt}`
+          `[GraphQL ${type}] network: ${formatTiming(networkMs)} | parse: ${formatTiming(parseMs)} | total: ${formatTiming(totalMs)} | cost: ${graphQLRateLimit.cost} | remaining: ${graphQLRateLimit.remaining} | reset: ${graphQLRateLimit.resetAt}`
         );
       }
     } else if (shouldLogGraphQLCost()) {
       console.log(
-        `[GraphQL ${type}] network: ${formatTiming(responseReceivedAt - requestStartedAt)} | parse: ${formatTiming(payloadParsedAt - responseReceivedAt)} | total: ${formatTiming(payloadParsedAt - requestStartedAt)}`
+        `[GraphQL ${type}] network: ${formatTiming(networkMs)} | parse: ${formatTiming(parseMs)} | total: ${formatTiming(totalMs)}`
       );
     }
+
+    Object.defineProperty(payload, '__meta', {
+      value: {
+        networkDurationMs: networkMs,
+        parseDurationMs: parseMs,
+        totalDurationMs: totalMs,
+        cost: Number.isFinite(graphQLRateLimit?.cost) ? graphQLRateLimit.cost : null,
+      },
+      enumerable: false,
+    });
 
     const hitRateLimit = hasRateLimitError(response, payload, rateLimit);
 
@@ -268,7 +264,7 @@ const api = {
       throw new Error(getGitHubRateLimitPauseMessage(rateLimit));
     }
 
-    if (!response.ok) {
+    if (response.status < 200 || response.status >= 300) {
       throw new Error(`GraphQL request failed: ${response.status} ${response.statusText}`);
     }
 
@@ -300,6 +296,44 @@ const api = {
   },
 };
 
+const prCacheKey = (repoName, number) => `${repoName}:${number}`;
+
+const getCommitConclusion = (headRefOid, commits) => commits?.nodes
+  ?.find((currentNode) => currentNode.commit.oid === headRefOid)
+  ?.commit?.statusCheckRollup?.state || null;
+
+const needsHydration = (cachedPR, discoveredUpdatedAt, discoveredCommitConclusion) => {
+  if (!cachedPR) return true;
+  if (!(cachedPR.updatedAt instanceof Date)) return true;
+  if (cachedPR.updatedAt.getTime() !== discoveredUpdatedAt?.getTime()) return true;
+  const cachedCommitConclusion = getCommitConclusion(cachedPR.headRefOid, cachedPR.commits);
+  if (cachedCommitConclusion !== discoveredCommitConclusion) return true;
+  return false;
+};
+
+const hydrateOpenPRs = async (token, owner, repoRequests) => {
+  if (repoRequests.length === 0) return [];
+
+  const results = await api.fetchHydrationBatches(token, owner, repoRequests);
+  const hydratedPRs = [];
+
+  results.forEach(({ payload, repoRequests: repoChunk }) => {
+    const repoDataMap = payload?.data || {};
+    repoChunk.forEach(({ repoName }, index) => {
+      const repoData = repoDataMap[getShortGraphQLAlias(index)];
+      if (!repoData) return;
+
+      Object.keys(repoData).forEach((pullRequestKey) => {
+        const pullRequest = repoData[pullRequestKey];
+        if (!pullRequest) return;
+        hydratedPRs.push(decoratePullRequest(pullRequest, repoName));
+      });
+    });
+  });
+
+  return hydratedPRs;
+};
+
 const decoratePullRequest = (pr, repoName) => ({
   ...pr,
   repository: { name: repoName },
@@ -320,7 +354,8 @@ const mergePullRequestCache = (existingPRs, fetchedPRs, targetRepos, sortFn) => 
 };
 
 const parseDatesInPR = (pr) => {
-  pr.createdAt = new Date(pr.createdAt);
+  if (pr.createdAt) pr.createdAt = new Date(pr.createdAt);
+  if (pr.updatedAt) pr.updatedAt = new Date(pr.updatedAt);
   if (pr.committedDate) pr.committedDate = new Date(pr.committedDate);
   pr.reviews?.nodes?.forEach((review) => { review.createdAt = new Date(review.createdAt); });
   pr.comments?.nodes?.forEach((comment) => { comment.createdAt = new Date(comment.createdAt); });
@@ -339,14 +374,15 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
       return;
     }
 
-    const sinceTwoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-    const results = await api.fetchBatchQueries(token, 'recent', owner, filteredRepos, sinceTwoWeeksAgo);
+    const sinceOneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const results = await api.fetchRecentBatches(token, owner, filteredRepos, sinceOneWeekAgo);
     const fetchCompletedAt = performance.now();
     const refCommits = [];
-    results.forEach((result) => {
-      const keys = Object.keys(result.data).filter((key) => key !== 'rateLimit');
-      keys.forEach((key) => {
-        const repoData = result.data[key];
+    results.forEach(({ payload, repos: chunkRepos }) => {
+      const repoDataMap = payload?.data || {};
+      chunkRepos.forEach((_, index) => {
+        const repoData = repoDataMap[getShortGraphQLAlias(index)];
+        if (!repoData) return;
         const mainRef = repoData.mainRef;
         if (mainRef?.target?.history?.nodes?.length > 0) {
           refCommits.push(mainRef);
@@ -370,13 +406,13 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
       .map((url) => recentPullRequests.find((pr) => pr.url === url));
 
     filteredRecentPRs.forEach(parseDatesInPR);
-    const recentPRs = filteredRecentPRs.sort(byCommittedDateDesc);
+    const recentPRs = filteredRecentPRs.sort(sortByCommittedDateDesc);
     const transformCompletedAt = performance.now();
 
     const renderStartedAt = performance.now();
     setState({
       recentPRs: merge
-        ? mergePullRequestCache(state.recentPRs, recentPRs, filteredRepos, byCommittedDateDesc)
+        ? mergePullRequestCache(state.recentPRs, recentPRs, filteredRepos, sortByCommittedDateDesc)
         : recentPRs,
     });
     const renderCompletedAt = performance.now();
@@ -394,6 +430,8 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
   }
 };
 
+const knownDraftTimestamps = new Map();
+
 const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
   const { merge = false } = options;
   const refreshStartedAt = performance.now();
@@ -407,22 +445,82 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
       return;
     }
 
-    const results = await api.fetchBatchQueries(token, 'open', owner, filteredRepos);
-    const fetchCompletedAt = performance.now();
-    const resultPRs = [];
-    results.forEach((result) => {
-      const keys = Object.keys(result.data).filter((key) => key !== 'rateLimit');
-      keys.forEach((key) => {
-        const repoName = result.data[key].name;
-        const pullRequests = result.data[key]?.pullRequests.nodes ?? [];
-        if (pullRequests.length > 0) {
-          resultPRs.push(...pullRequests.map((pr) => decoratePullRequest(pr, repoName)));
-        }
+    const discoveryBatchSize = DISCOVERY_BATCH_SIZE;
+    const discoveryBatches = await api.fetchDiscoveryBatches(token, owner, filteredRepos);
+    const discoveryCompletedAt = performance.now();
+
+    const discoveredPRs = [];
+    discoveryBatches.forEach(({ payload, repos: chunkRepos }) => {
+      const repoDataMap = payload?.data || {};
+      chunkRepos.forEach((repoName, index) => {
+        const nodes = repoDataMap[getShortGraphQLAlias(index)]?.pullRequests?.nodes ?? [];
+        nodes.forEach((pr) => {
+          discoveredPRs.push({
+            number: pr.number,
+            updatedAt: pr.updatedAt ? new Date(pr.updatedAt) : null,
+            commitConclusion: pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state || null,
+            repoName,
+          });
+        });
       });
     });
 
-    resultPRs.forEach(parseDatesInPR);
-    const openPRs = resultPRs.sort(sortByCreatedAt).filter((pr) => !pr.isDraft);
+    const cachedPRsByKey = new Map(
+      state.PRs.map((pr) => [prCacheKey(pr.repository.name, pr.number), pr])
+    );
+    const unchangedPRsByKey = new Map();
+    const hydrateRequestsByRepo = new Map();
+    let unchangedCount = 0;
+
+    discoveredPRs.forEach((pr) => {
+      const key = prCacheKey(pr.repoName, pr.number);
+      const cachedPR = cachedPRsByKey.get(key);
+
+      if (knownDraftTimestamps.get(key) === pr.updatedAt?.getTime()) {
+        return;
+      }
+
+      if (!needsHydration(cachedPR, pr.updatedAt, pr.commitConclusion)) {
+        unchangedCount += 1;
+        unchangedPRsByKey.set(key, cachedPR);
+        return;
+      }
+
+      if (cachedPR) {
+        unchangedPRsByKey.set(key, cachedPR);
+      }
+      const numbers = hydrateRequestsByRepo.get(pr.repoName) || [];
+      numbers.push(pr.number);
+      hydrateRequestsByRepo.set(pr.repoName, numbers);
+    });
+
+    const hydrateRequests = [...hydrateRequestsByRepo.entries()].map(([repoName, numbers]) => ({
+      repoName,
+      numbers,
+    }));
+
+    const hydratedPRs = await hydrateOpenPRs(token, owner, hydrateRequests);
+    const hydrateCompletedAt = performance.now();
+    hydratedPRs.forEach(parseDatesInPR);
+    hydratedPRs.forEach((pr) => {
+      const key = prCacheKey(pr.repository.name, pr.number);
+      if (pr.isDraft) {
+        knownDraftTimestamps.set(key, pr.updatedAt?.getTime() || 0);
+        return;
+      }
+      knownDraftTimestamps.delete(key);
+    });
+    const hydratedByKey = new Map(
+      hydratedPRs.map((pr) => [prCacheKey(pr.repository.name, pr.number), pr])
+    );
+
+    const openPRs = discoveredPRs
+      .map((pr) => {
+        const key = prCacheKey(pr.repoName, pr.number);
+        return hydratedByKey.get(key) || unchangedPRsByKey.get(key);
+      })
+      .filter((pr) => pr && !pr.isDraft)
+      .sort(sortByCreatedAt);
     const transformCompletedAt = performance.now();
 
     const renderStartedAt = performance.now();
@@ -435,7 +533,7 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
 
     if (shouldLogGraphQLCost()) {
       console.log(
-        `[PR refresh open] total: ${formatTiming(renderCompletedAt - refreshStartedAt)} | fetch: ${formatTiming(fetchCompletedAt - refreshStartedAt)} | transform: ${formatTiming(transformCompletedAt - fetchCompletedAt)} | render: ${formatTiming(renderCompletedAt - renderStartedAt)} | repos: ${filteredRepos.length} | prs: ${openPRs.length}`
+        `[PR refresh open] total: ${formatTiming(renderCompletedAt - refreshStartedAt)} | discovery: ${formatTiming(discoveryCompletedAt - refreshStartedAt)} | discovery batch: ${discoveryBatchSize} | hydrate: ${formatTiming(hydrateCompletedAt - discoveryCompletedAt)} | transform: ${formatTiming(transformCompletedAt - hydrateCompletedAt)} | render: ${formatTiming(renderCompletedAt - renderStartedAt)} | repos: ${filteredRepos.length} | prs: ${openPRs.length} | hydrated: ${hydratedPRs.length} | unchanged: ${unchangedCount}`
       );
     }
   } catch (error) {
@@ -582,8 +680,6 @@ const getAgeString = (createdAt) => {
 };
 
 const getCommitState = (headRefOid, commits) => {
-  const node = commits.nodes.find((currentNode) => currentNode.commit.oid === headRefOid);
-
   const icons = {
     SUCCESS: ICONS.check,
     PENDING: ICONS.hourglass,
@@ -592,7 +688,7 @@ const getCommitState = (headRefOid, commits) => {
     ERROR: ICONS.warning,
   };
 
-  const conclusion = node?.commit?.statusCheckRollup?.state || 'ERROR';
+  const conclusion = getCommitConclusion(headRefOid, commits) || 'ERROR';
   const icon = icons[conclusion] || ICONS.minus;
   const className = conclusion.toLowerCase();
 
@@ -886,7 +982,8 @@ const updateGitHubRateLimit = (updates) => {
     return;
   }
 
-  setState({ githubRateLimit: nextRateLimit });
+  state = { ...state, githubRateLimit: nextRateLimit };
+  renderRepoRefreshStatus();
 };
 
 const getGitHubRateLimitFromHeaders = (headers) => {
