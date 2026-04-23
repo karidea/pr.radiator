@@ -1517,7 +1517,7 @@ const renderShortlogView = () => {
     .sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]));
   const tableRows = sortedRepos.map(([repoName, counts]) => `<tr><td><a href="https://github.com/${owner}/${repoName}" target="_blank" rel="noopener noreferrer">${repoName}</a></td><td class="count-cell">${counts.total}</td><td class="count-cell external-count">${counts.external}</td><td class="count-cell">${counts.internal}</td><td class="count-cell dim-count">${counts.bot}</td></tr>`).join('');
   const tableHtml = sortedRepos.length > 0
-    ? `<table class="shortlog-table"><thead><tr><th>Repository</th><th class="count-cell">Total (${totals.total})</th><th class="count-cell external-count">External (${totals.external})</th><th class="count-cell">Internal (${totals.internal})</th><th class="count-cell dim-count">Bots (${totals.bot})</th></tr></thead><tbody>${tableRows}</tbody></table>`
+    ? `<table class="shortlog-table"><thead><tr><th>Repository</th><th class="count-cell">Total <span class="th-count">${totals.total}</span></th><th class="count-cell">External <span class="th-count external-count">${totals.external}</span></th><th class="count-cell">Internal <span class="th-count">${totals.internal}</span></th><th class="count-cell">Bots <span class="th-count dim-count">${totals.bot}</span></th></tr></thead><tbody>${tableRows}</tbody></table>`
     : '';
 
   const visiblePRs = (filterType === 'all' || filterType === 'repo')

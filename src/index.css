@@ -589,6 +589,14 @@ a {
   text-align: right;
 }
 
+.th-count {
+  color: #d8d8d8;
+  font-weight: 400;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .shortlog-pr-section {
   margin-top: 4px;
 }
