@@ -20,7 +20,7 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 * **d** - Toggle Dependabot PRs filter
 * **n** - Toggle Needs Review filter
 * **t** - Cycle team scope
-* **f** - Cycle author filter (shortlog only: all → external → internal → bot)
+* **f** - Cycle author filter (shortlog only: all → external → internal → bot → repo)
 
 ### Navigation
 * **j/k** - Navigate down/up
@@ -40,8 +40,8 @@ Shows PRs merged to **any branch** of the configured repositories since a given 
 
 * Defaults to the start of the current year; date can be changed with the date picker in the header
 * Displays a total summary, per-repository breakdown (total / external / internal / bots) sorted by most merged, and a PR list grouped by author sorted by contribution count
-* Press **f** to cycle the author filter: `all → external → internal → bot`; default is `external`
-* In `all` mode, PRs are grouped by author across all types (git shortlog style) with type-coded author names
+* Press **f** to cycle the author filter: `all → external → internal → bot → repo`; default is `external`
+* In `all`/`external`/`internal`/`bot` modes, PRs are grouped by author sorted by contribution count; in `repo` mode PRs are grouped by repository with type-coded author names
 * Team member lists are fetched from GitHub and cached locally for 1 hour; press **R** to force a full refresh
 * Respects team scope cycling (**t**) to narrow repositories; internal logins always include members of all configured teams
 * Press **r** to reload data for the current date and scope

@@ -1515,39 +1515,64 @@ const renderShortlogView = () => {
     ? `<table class="shortlog-table"><thead><tr><th>Repository</th><th class="count-cell">Total</th><th class="count-cell">External</th><th class="count-cell">Internal</th><th class="count-cell">Bots</th></tr></thead><tbody>${tableRows}</tbody></table>`
     : '';
 
-  const visiblePRs = filterType === 'all' ? allPRs : allPRs.filter((pr) => pr.authorType === filterType);
+  const visiblePRs = (filterType === 'all' || filterType === 'repo')
+    ? allPRs
+    : allPRs.filter((pr) => pr.authorType === filterType);
   let prListHtml = '';
   if (visiblePRs.length > 0) {
-    const byAuthor = new Map();
-    visiblePRs.forEach((pr) => {
-      if (!byAuthor.has(pr.authorLogin)) {
-        byAuthor.set(pr.authorLogin, { authorType: pr.authorType, prs: [], latestMergedAt: null });
-      }
-      const group = byAuthor.get(pr.authorLogin);
-      group.prs.push(pr);
-      if (pr.mergedAt && (!group.latestMergedAt || pr.mergedAt > group.latestMergedAt)) {
-        group.latestMergedAt = pr.mergedAt;
-      }
-    });
-    const sortedAuthors = [...byAuthor.entries()].sort(([aLogin, a], [bLogin, b]) => {
-      if (b.prs.length !== a.prs.length) return b.prs.length - a.prs.length;
-      const aTime = a.latestMergedAt ? a.latestMergedAt.getTime() : 0;
-      const bTime = b.latestMergedAt ? b.latestMergedAt.getTime() : 0;
-      if (bTime !== aTime) return bTime - aTime;
-      return aLogin.localeCompare(bLogin);
-    });
-    const groupsHtml = sortedAuthors.map(([login, { authorType, prs }]) => {
-      const nameClass = filterType === 'all'
-        ? (authorType === 'external' ? ' class="external-count"' : authorType === 'bot' ? ' class="dim-count"' : '')
-        : '';
-      const rowsHtml = prs.map((pr) => {
-        const mergedAgo = pr.mergedAt ? formatCompactDistanceToNow(pr.mergedAt) : '';
+    let groupsHtml;
+    if (filterType === 'repo') {
+      const byRepo = new Map();
+      visiblePRs.forEach((pr) => {
         const repoName = pr.repository?.name || 'unknown';
-        const branchStr = pr.baseRefName && !DEFAULT_BRANCHES.has(pr.baseRefName) ? ` · ${pr.baseRefName}` : '';
-        return `<li class="shortlog-pr-item"><a href="${pr.url}" target="_blank" rel="noopener noreferrer">#${pr.number} ${pr.title}</a><span class="shortlog-pr-meta"> — ${repoName}${mergedAgo ? ` · ${mergedAgo} ago` : ''}${branchStr}</span></li>`;
+        if (!byRepo.has(repoName)) byRepo.set(repoName, []);
+        byRepo.get(repoName).push(pr);
+      });
+      const sortedByRepo = [...byRepo.entries()].sort(([aName, a], [bName, b]) => {
+        if (b.length !== a.length) return b.length - a.length;
+        return aName.localeCompare(bName);
+      });
+      groupsHtml = sortedByRepo.map(([repoName, repoPRs]) => {
+        const rowsHtml = repoPRs.map((pr) => {
+          const mergedAgo = pr.mergedAt ? formatCompactDistanceToNow(pr.mergedAt) : '';
+          const branchStr = pr.baseRefName && !DEFAULT_BRANCHES.has(pr.baseRefName) ? ` · ${pr.baseRefName}` : '';
+          const authorClass = pr.authorType === 'external' ? ' class="external-count"' : pr.authorType === 'bot' ? ' class="dim-count"' : '';
+          return `<li class="shortlog-pr-item"><a href="${pr.url}" target="_blank" rel="noopener noreferrer">#${pr.number} ${pr.title}</a><span class="shortlog-pr-meta"> — <span${authorClass}>${pr.authorLogin}</span>${mergedAgo ? ` · ${mergedAgo} ago` : ''}${branchStr}</span></li>`;
+        }).join('');
+        return `<div class="shortlog-author-group"><div class="shortlog-author-name"><a href="https://github.com/${owner}/${repoName}" target="_blank" rel="noopener noreferrer">${repoName}</a> (${repoPRs.length})</div><ul class="shortlog-pr-list">${rowsHtml}</ul></div>`;
       }).join('');
-      return `<div class="shortlog-author-group"><div class="shortlog-author-name"${nameClass}>${login} (${prs.length})</div><ul class="shortlog-pr-list">${rowsHtml}</ul></div>`;
-    }).join('');
+    } else {
+      const byAuthor = new Map();
+      visiblePRs.forEach((pr) => {
+        if (!byAuthor.has(pr.authorLogin)) {
+          byAuthor.set(pr.authorLogin, { authorType: pr.authorType, prs: [], latestMergedAt: null });
+        }
+        const group = byAuthor.get(pr.authorLogin);
+        group.prs.push(pr);
+        if (pr.mergedAt && (!group.latestMergedAt || pr.mergedAt > group.latestMergedAt)) {
+          group.latestMergedAt = pr.mergedAt;
+        }
+      });
+      const sortedAuthors = [...byAuthor.entries()].sort(([aLogin, a], [bLogin, b]) => {
+        if (b.prs.length !== a.prs.length) return b.prs.length - a.prs.length;
+        const aTime = a.latestMergedAt ? a.latestMergedAt.getTime() : 0;
+        const bTime = b.latestMergedAt ? b.latestMergedAt.getTime() : 0;
+        if (bTime !== aTime) return bTime - aTime;
+        return aLogin.localeCompare(bLogin);
+      });
+      groupsHtml = sortedAuthors.map(([login, { authorType, prs }]) => {
+        const nameClass = filterType === 'all'
+          ? (authorType === 'external' ? ' class="external-count"' : authorType === 'bot' ? ' class="dim-count"' : '')
+          : '';
+        const rowsHtml = prs.map((pr) => {
+          const mergedAgo = pr.mergedAt ? formatCompactDistanceToNow(pr.mergedAt) : '';
+          const repoName = pr.repository?.name || 'unknown';
+          const branchStr = pr.baseRefName && !DEFAULT_BRANCHES.has(pr.baseRefName) ? ` · ${pr.baseRefName}` : '';
+          return `<li class="shortlog-pr-item"><a href="${pr.url}" target="_blank" rel="noopener noreferrer">#${pr.number} ${pr.title}</a><span class="shortlog-pr-meta"> — ${repoName}${mergedAgo ? ` · ${mergedAgo} ago` : ''}${branchStr}</span></li>`;
+        }).join('');
+        return `<div class="shortlog-author-group"><div class="shortlog-author-name"${nameClass}>${login} (${prs.length})</div><ul class="shortlog-pr-list">${rowsHtml}</ul></div>`;
+      }).join('');
+    }
     prListHtml = `<div class="shortlog-pr-section">${groupsHtml}</div>`;
   } else if (totals.total > 0) {
     prListHtml = `<div class="shortlog-empty">No ${filterType === 'all' ? '' : `${filterType} `}PRs found in this period.</div>`;
@@ -1608,12 +1633,13 @@ const render = () => {
     const { shortlogData, isFetchingShortlog } = state;
     const filterType = state.shortlogAuthorFilter;
     const filteredCount = shortlogData
-      ? (filterType === 'all' ? shortlogData.totals.total : shortlogData.totals[filterType])
+      ? (['all', 'repo'].includes(filterType) ? shortlogData.totals.total : shortlogData.totals[filterType])
       : null;
     const badge = isFetchingShortlog
       ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
       : filteredCount !== null ? filteredCount : '—';
-    const shortlogSummaryParts = ['shortlog', filterType];
+    const shortlogSummaryParts = ['shortlog'];
+    if (filterType !== 'all') shortlogSummaryParts.push(filterType);
     if (scopeLabel) shortlogSummaryParts.push(scopeLabel);
     const shortlogSummaryEl = `<span class="view-summary">— ${shortlogSummaryParts.join(' | ')}</span>`;
     shortlogHeaderTitle.innerHTML = `Pull requests (${badge}) ${shortlogSummaryEl}`;
@@ -1997,7 +2023,7 @@ const init = async () => {
       n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs, selectedPrIndex: -1 }),
       f: () => {
         if (!state.showShortlog) return;
-        const cycle = { all: 'external', external: 'internal', internal: 'bot', bot: 'all' };
+        const cycle = { all: 'external', external: 'internal', internal: 'bot', bot: 'repo', repo: 'all' };
         setState({ shortlogAuthorFilter: cycle[state.shortlogAuthorFilter] ?? 'external' });
       },
       r: () => {
