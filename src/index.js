@@ -188,6 +188,7 @@ const TeamMembersQuery = (owner, team, after = null) => {
 };
 
 const shortlogPRFields = 'number title url mergedAt author{__typename login} baseRefName repository{name}';
+const DEFAULT_BRANCHES = new Set(['main', 'master', 'develop', 'trunk', 'development']);
 
 const buildShortlogSearchQuery = (owner, repos, sinceDate) => {
   const batchedSearches = repos
@@ -477,37 +478,44 @@ const fetchShortlogData = async (token, owner, repos, ignoreRepos, sinceDate) =>
 const classifyAndAggregateShortlog = (prs, internalLogins) => {
   const totals = { total: 0, external: 0, internal: 0, bot: 0 };
   const perRepo = new Map();
-  const externalPRs = [];
+  const allPRs = [];
 
   prs.forEach((pr) => {
     const repoName = pr.repository?.name || 'unknown';
     const author = pr.author;
-    if (!perRepo.has(repoName)) {
-      perRepo.set(repoName, { total: 0, external: 0, internal: 0, bot: 0 });
-    }
+    if (!perRepo.has(repoName)) perRepo.set(repoName, { total: 0, external: 0, internal: 0, bot: 0 });
     const counts = perRepo.get(repoName);
     totals.total++;
     counts.total++;
+    let authorType;
     if (isBotLogin(author)) {
+      authorType = 'bot';
       totals.bot++;
       counts.bot++;
     } else if (internalLogins.has(author?.login || '')) {
+      authorType = 'internal';
       totals.internal++;
       counts.internal++;
     } else {
+      authorType = 'external';
       totals.external++;
       counts.external++;
-      externalPRs.push({ ...pr, mergedAt: pr.mergedAt ? new Date(pr.mergedAt) : null });
     }
+    allPRs.push({
+      ...pr,
+      mergedAt: pr.mergedAt ? new Date(pr.mergedAt) : null,
+      authorType,
+      authorLogin: author?.login || 'ghost',
+    });
   });
 
-  externalPRs.sort((a, b) => {
+  allPRs.sort((a, b) => {
     if (!a.mergedAt) return 1;
     if (!b.mergedAt) return -1;
     return b.mergedAt.getTime() - a.mergedAt.getTime();
   });
 
-  return { totals, perRepo, externalPRs };
+  return { totals, perRepo, allPRs };
 };
 
 const fetchShortlog = async (options = {}) => {
@@ -536,12 +544,12 @@ const fetchShortlog = async (options = {}) => {
       console.warn('⚠️ shortlog: some team member lists failed to load; classifications may be incomplete.');
     }
     const prs = await fetchShortlogData(token, owner, repos, ignoreRepos, sinceDate);
-    const { totals, perRepo, externalPRs } = classifyAndAggregateShortlog(prs, internalLogins);
+    const { totals, perRepo, allPRs } = classifyAndAggregateShortlog(prs, internalLogins);
     setState({
       shortlogData: {
         totals,
         perRepo,
-        externalPRs,
+        allPRs,
         sinceDate,
         activeTeamSlug: state.activeTeamSlug,
         fetchedAt: Date.now(),
@@ -1178,6 +1186,7 @@ const initialState = {
   showShortlog: false,
   shortlogData: null,
   shortlogSinceDate: localStorage.getItem(STORAGE_KEYS.shortlogSinceDate) || `${new Date().getFullYear()}-01-01`,
+  shortlogAuthorFilter: 'external',
   isFetchingShortlog: false,
   selectedRepoIndex: -1,
   selectedPrIndex: -1,
@@ -1456,6 +1465,7 @@ const applyConfig = async () => {
     selectedPrIndex: -1,
     showShortlog: false,
     shortlogData: null,
+    shortlogAuthorFilter: 'external',
   });
 
   if (!canRefreshConfig(nextConfig)) {
@@ -1489,11 +1499,13 @@ const renderShortlogView = () => {
     return;
   }
 
-  const { totals, perRepo, externalPRs, membersAllLoaded } = shortlogData;
+  const filterType = state.shortlogAuthorFilter;
+  const { totals, perRepo, allPRs, membersAllLoaded } = shortlogData;
+
   const warningBanner = !membersAllLoaded
     ? `<div class="shortlog-warning">${ICONS.warning} Some team member lists failed to load; classifications may be inaccurate.</div>`
     : '';
-  const summaryHtml = `<div class="shortlog-summary">Total: <strong>${totals.total}</strong> · External: <strong class="external-count">${totals.external}</strong> · Internal: <strong>${totals.internal}</strong> · Bots: <strong>${totals.bot}</strong></div>`;
+  const summaryHtml = `<div class="shortlog-summary">Total: <strong>${totals.total}</strong> · External: <strong class="external-count">${totals.external}</strong> · Internal: <strong>${totals.internal}</strong> · Bots: <strong class="dim-count">${totals.bot}</strong></div>`;
 
   const sortedRepos = [...perRepo.entries()]
     .filter(([, counts]) => counts.total > 0)
@@ -1503,26 +1515,42 @@ const renderShortlogView = () => {
     ? `<table class="shortlog-table"><thead><tr><th>Repository</th><th class="count-cell">Total</th><th class="count-cell">External</th><th class="count-cell">Internal</th><th class="count-cell">Bots</th></tr></thead><tbody>${tableRows}</tbody></table>`
     : '';
 
-  const prsByRepo = new Map();
-  externalPRs.forEach((pr) => {
-    const repoName = pr.repository?.name || 'unknown';
-    if (!prsByRepo.has(repoName)) prsByRepo.set(repoName, []);
-    prsByRepo.get(repoName).push(pr);
-  });
+  const visiblePRs = filterType === 'all' ? allPRs : allPRs.filter((pr) => pr.authorType === filterType);
   let prListHtml = '';
-  if (externalPRs.length > 0) {
-    const groupsHtml = [...prsByRepo.entries()].map(([repoName, repoPRs]) => {
-      const rowsHtml = repoPRs.map((pr) => {
-        const authorLogin = getActorLogin(pr.author, 'ghost');
+  if (visiblePRs.length > 0) {
+    const byAuthor = new Map();
+    visiblePRs.forEach((pr) => {
+      if (!byAuthor.has(pr.authorLogin)) {
+        byAuthor.set(pr.authorLogin, { authorType: pr.authorType, prs: [], latestMergedAt: null });
+      }
+      const group = byAuthor.get(pr.authorLogin);
+      group.prs.push(pr);
+      if (pr.mergedAt && (!group.latestMergedAt || pr.mergedAt > group.latestMergedAt)) {
+        group.latestMergedAt = pr.mergedAt;
+      }
+    });
+    const sortedAuthors = [...byAuthor.entries()].sort(([aLogin, a], [bLogin, b]) => {
+      if (b.prs.length !== a.prs.length) return b.prs.length - a.prs.length;
+      const aTime = a.latestMergedAt ? a.latestMergedAt.getTime() : 0;
+      const bTime = b.latestMergedAt ? b.latestMergedAt.getTime() : 0;
+      if (bTime !== aTime) return bTime - aTime;
+      return aLogin.localeCompare(bLogin);
+    });
+    const groupsHtml = sortedAuthors.map(([login, { authorType, prs }]) => {
+      const nameClass = filterType === 'all'
+        ? (authorType === 'external' ? ' class="external-count"' : authorType === 'bot' ? ' class="dim-count"' : '')
+        : '';
+      const rowsHtml = prs.map((pr) => {
         const mergedAgo = pr.mergedAt ? formatCompactDistanceToNow(pr.mergedAt) : '';
-        const branch = pr.baseRefName ? ` · ${pr.baseRefName}` : '';
-        return `<li class="external-pr-item"><a href="${pr.url}" target="_blank" rel="noopener noreferrer">#${pr.number} ${pr.title}</a><span class="external-pr-meta"> — ${authorLogin}${mergedAgo ? ` · ${mergedAgo} ago` : ''}${branch}</span></li>`;
+        const repoName = pr.repository?.name || 'unknown';
+        const branchStr = pr.baseRefName && !DEFAULT_BRANCHES.has(pr.baseRefName) ? ` · ${pr.baseRefName}` : '';
+        return `<li class="shortlog-pr-item"><a href="${pr.url}" target="_blank" rel="noopener noreferrer">#${pr.number} ${pr.title}</a><span class="shortlog-pr-meta"> — ${repoName}${mergedAgo ? ` · ${mergedAgo} ago` : ''}${branchStr}</span></li>`;
       }).join('');
-      return `<div class="external-prs-repo-group"><div class="external-prs-repo-name"><a href="https://github.com/${owner}/${repoName}" target="_blank" rel="noopener noreferrer">${repoName}</a> (${repoPRs.length})</div><ul class="external-prs-list">${rowsHtml}</ul></div>`;
+      return `<div class="shortlog-author-group"><div class="shortlog-author-name"${nameClass}>${login} (${prs.length})</div><ul class="shortlog-pr-list">${rowsHtml}</ul></div>`;
     }).join('');
-    prListHtml = `<div class="external-prs-section"><h3 class="external-prs-heading">External pull requests (${externalPRs.length})</h3>${groupsHtml}</div>`;
+    prListHtml = `<div class="shortlog-pr-section">${groupsHtml}</div>`;
   } else if (totals.total > 0) {
-    prListHtml = '<div class="shortlog-empty">No external PRs found in this period.</div>';
+    prListHtml = `<div class="shortlog-empty">No ${filterType === 'all' ? '' : `${filterType} `}PRs found in this period.</div>`;
   }
 
   shortlogBody.innerHTML = warningBanner + summaryHtml + tableHtml + prListHtml;
@@ -1578,10 +1606,14 @@ const render = () => {
     shortlogView.classList.remove('hidden');
     renderCache.mode = 'shortlog';
     const { shortlogData, isFetchingShortlog } = state;
+    const filterType = state.shortlogAuthorFilter;
+    const filteredCount = shortlogData
+      ? (filterType === 'all' ? shortlogData.totals.total : shortlogData.totals[filterType])
+      : null;
     const badge = isFetchingShortlog
       ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
-      : shortlogData ? shortlogData.totals.total : '—';
-    const shortlogSummaryParts = ['shortlog'];
+      : filteredCount !== null ? filteredCount : '—';
+    const shortlogSummaryParts = ['shortlog', filterType];
     if (scopeLabel) shortlogSummaryParts.push(scopeLabel);
     const shortlogSummaryEl = `<span class="view-summary">— ${shortlogSummaryParts.join(' | ')}</span>`;
     shortlogHeaderTitle.innerHTML = `Pull requests (${badge}) ${shortlogSummaryEl}`;
@@ -1963,6 +1995,11 @@ const init = async () => {
       },
       d: () => setState({ showDependabotPRs: !state.showDependabotPRs, selectedPrIndex: -1 }),
       n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs, selectedPrIndex: -1 }),
+      f: () => {
+        if (!state.showShortlog) return;
+        const cycle = { all: 'external', external: 'internal', internal: 'bot', bot: 'all' };
+        setState({ shortlogAuthorFilter: cycle[state.shortlogAuthorFilter] ?? 'external' });
+      },
       r: () => {
         setState({ selectedPrIndex: -1, selectedRepoIndex: -1 });
         if (state.showShortlog) {

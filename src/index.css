@@ -589,48 +589,35 @@ a {
   text-align: right;
 }
 
-.external-prs-section {
+.shortlog-pr-section {
   margin-top: 4px;
 }
 
-.external-prs-heading {
-  font-size: 11px;
-  font-weight: 600;
-  color: #8a8a6f;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin: 0 0 8px;
-}
-
-.external-prs-repo-group {
+.shortlog-author-group {
   margin-bottom: 12px;
 }
 
-.external-prs-repo-name {
-  color: #fabd2f;
+.shortlog-author-name {
+  color: #d8d8d8;
   font-weight: 600;
   margin-bottom: 2px;
 }
 
-.external-prs-repo-name a {
-  color: #fabd2f;
-}
-
-.external-prs-list {
+.shortlog-pr-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.external-pr-item {
+.shortlog-pr-item {
   padding: 1px 0;
   line-height: 1.4;
 }
 
-.external-pr-item a {
+.shortlog-pr-item a {
   color: #49a29f;
 }
 
-.external-pr-meta {
+.shortlog-pr-meta {
   color: #6a6a6a;
 }
