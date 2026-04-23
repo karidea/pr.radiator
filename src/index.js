@@ -1581,11 +1581,8 @@ const render = () => {
     const badge = isFetchingShortlog
       ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
       : shortlogData ? shortlogData.totals.total : '—';
-    const [y, m, d] = state.shortlogSinceDate.split('-');
-    const sinceFormatted = `since ${parseInt(m)}/${parseInt(d)}/${y}`;
     const shortlogSummaryParts = ['shortlog'];
     if (scopeLabel) shortlogSummaryParts.push(scopeLabel);
-    shortlogSummaryParts.push(sinceFormatted);
     const shortlogSummaryEl = `<span class="view-summary">— ${shortlogSummaryParts.join(' | ')}</span>`;
     shortlogHeaderTitle.innerHTML = `Pull requests (${badge}) ${shortlogSummaryEl}`;
     renderShortlogView();
