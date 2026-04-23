@@ -10,7 +10,7 @@ const STORAGE_KEYS = {
   extraRepos: 'PR_RADIATOR_EXTRA_REPOS',
   graphqlCostDebug: 'PR_RADIATOR_GRAPHQL_COST_DEBUG',
   teamMembersCache: 'PR_RADIATOR_TEAM_MEMBERS_CACHE',
-  externalMergesSinceDate: 'PR_RADIATOR_EXTERNAL_SINCE_DATE',
+  shortlogSinceDate: 'PR_RADIATOR_SHORTLOG_SINCE_DATE',
 };
 
 const GRAPHQL_REPO_BATCH_SIZE = 2;
@@ -39,10 +39,10 @@ const ownerInput = document.getElementById('owner');
 const teamsInput = document.getElementById('teams');
 const tokenInput = document.getElementById('token');
 const applyConfigButton = document.getElementById('apply-config');
-const externalMergesView = document.getElementById('external-merges-view');
-const externalMergesHeaderTitle = document.getElementById('external-merges-header-title');
-const externalMergesBody = document.getElementById('external-merges-body');
-const externalMergesSinceDateInput = document.getElementById('external-merges-since');
+const shortlogView = document.getElementById('shortlog-view');
+const shortlogHeaderTitle = document.getElementById('shortlog-header-title');
+const shortlogBody = document.getElementById('shortlog-body');
+const shortlogSinceDateInput = document.getElementById('shortlog-since');
 
 const parseStoredJSON = (key, fallback) => {
   try {
@@ -187,17 +187,17 @@ const TeamMembersQuery = (owner, team, after = null) => {
   return `{organization(login:"${owner}"){team(slug:"${team}"){members(first:100${afterArg}){pageInfo{endCursor hasNextPage}nodes{login}}}}}`;
 };
 
-const externalMergesPRFields = 'number title url mergedAt author{__typename login} baseRefName repository{name}';
+const shortlogPRFields = 'number title url mergedAt author{__typename login} baseRefName repository{name}';
 
-const buildExternalMergesSearchQuery = (owner, repos, sinceDate) => {
+const buildShortlogSearchQuery = (owner, repos, sinceDate) => {
   const batchedSearches = repos
-    .map((repo, index) => `${getShortGraphQLAlias(index)}:search(type:ISSUE,first:100,query:"repo:${owner}/${repo} is:pr is:merged merged:>=${sinceDate}"){issueCount pageInfo{endCursor hasNextPage}nodes{...on PullRequest{${externalMergesPRFields}}}}`)
+    .map((repo, index) => `${getShortGraphQLAlias(index)}:search(type:ISSUE,first:100,query:"repo:${owner}/${repo} is:pr is:merged merged:>=${sinceDate}"){issueCount pageInfo{endCursor hasNextPage}nodes{...on PullRequest{${shortlogPRFields}}}}`)
     .join(' ');
   return `query{${graphqlCostFragment} ${batchedSearches}}`;
 };
 
-const buildExternalMergesPaginationQuery = (owner, repo, sinceDate, cursor) => {
-  return `query{${graphqlCostFragment} search(type:ISSUE,first:100,after:"${cursor}",query:"repo:${owner}/${repo} is:pr is:merged merged:>=${sinceDate}"){pageInfo{endCursor hasNextPage}nodes{...on PullRequest{${externalMergesPRFields}}}}}`;
+const buildShortlogPaginationQuery = (owner, repo, sinceDate, cursor) => {
+  return `query{${graphqlCostFragment} search(type:ISSUE,first:100,after:"${cursor}",query:"repo:${owner}/${repo} is:pr is:merged merged:>=${sinceDate}"){pageInfo{endCursor hasNextPage}nodes{...on PullRequest{${shortlogPRFields}}}}}`;
 };
 
 const chunkArray = (items, size) => Array.from(
@@ -423,7 +423,7 @@ const refreshTeamMembersCache = async (token, owner, teams, existingCache = new 
   return updatedCache;
 };
 
-const fetchExternalMergesData = async (token, owner, repos, ignoreRepos, sinceDate) => {
+const fetchShortlogData = async (token, owner, repos, ignoreRepos, sinceDate) => {
   const filteredRepos = repos.filter((repo) => !ignoreRepos.includes(repo));
   if (filteredRepos.length === 0) return [];
 
@@ -433,7 +433,7 @@ const fetchExternalMergesData = async (token, owner, repos, ignoreRepos, sinceDa
   const reposNeedingPagination = [];
 
   await Promise.all(chunks.map(async (chunk) => {
-    const query = buildExternalMergesSearchQuery(owner, chunk, sinceDate);
+    const query = buildShortlogSearchQuery(owner, chunk, sinceDate);
     const payload = await api.fetchGraphQL(token, query, { type: 'external-search' });
     const data = payload?.data || {};
     chunk.forEach((repoName, index) => {
@@ -456,7 +456,7 @@ const fetchExternalMergesData = async (token, owner, repos, ignoreRepos, sinceDa
     let cursor = initialCursor;
     let hasNextPage = true;
     while (hasNextPage) {
-      const query = buildExternalMergesPaginationQuery(owner, repoName, sinceDate, cursor);
+      const query = buildShortlogPaginationQuery(owner, repoName, sinceDate, cursor);
       const payload = await api.fetchGraphQL(token, query, { type: 'external-search-page' });
       const searchData = payload?.data?.search;
       if (!searchData) break;
@@ -469,12 +469,12 @@ const fetchExternalMergesData = async (token, owner, repos, ignoreRepos, sinceDa
   }));
 
   if (issueCountWarnings.length > 0) {
-    console.warn(`⚠️ External merges: some repos may have incomplete results (>1000 PRs): ${issueCountWarnings.join(', ')}`);
+    console.warn(`⚠️ shortlog: some repos may have incomplete results (>1000 PRs): ${issueCountWarnings.join(', ')}`);
   }
   return allPRs;
 };
 
-const classifyAndAggregateExternalMerges = (prs, internalLogins) => {
+const classifyAndAggregateShortlog = (prs, internalLogins) => {
   const totals = { total: 0, external: 0, internal: 0, bot: 0 };
   const perRepo = new Map();
   const externalPRs = [];
@@ -510,17 +510,17 @@ const classifyAndAggregateExternalMerges = (prs, internalLogins) => {
   return { totals, perRepo, externalPRs };
 };
 
-const fetchExternalMerges = async (options = {}) => {
+const fetchShortlog = async (options = {}) => {
   const { forceRefreshMembers = false } = options;
   const { token, owner, teams, ignoreRepos } = state.config;
-  const sinceDate = state.externalMergesSinceDate;
+  const sinceDate = state.shortlogSinceDate;
   if (!token || !owner || teams.length === 0) return;
   if (shouldPauseGitHubRefresh()) {
     renderRepoRefreshStatus();
     return;
   }
   try {
-    setState({ isFetchingExternalMerges: true });
+    setState({ isFetchingShortlog: true });
     startProgress();
     const repos = getVisibleRepos();
     let membersCache = loadPersistedMemberCache();
@@ -533,12 +533,12 @@ const fetchExternalMerges = async (options = {}) => {
     membersCache = await refreshTeamMembersCache(token, owner, teams, membersCache);
     const { logins: internalLogins, allLoaded } = getInternalLoginsFromCache(membersCache, teams);
     if (!allLoaded) {
-      console.warn('⚠️ External merges: some team member lists failed to load; classifications may be incomplete.');
+      console.warn('⚠️ shortlog: some team member lists failed to load; classifications may be incomplete.');
     }
-    const prs = await fetchExternalMergesData(token, owner, repos, ignoreRepos, sinceDate);
-    const { totals, perRepo, externalPRs } = classifyAndAggregateExternalMerges(prs, internalLogins);
+    const prs = await fetchShortlogData(token, owner, repos, ignoreRepos, sinceDate);
+    const { totals, perRepo, externalPRs } = classifyAndAggregateShortlog(prs, internalLogins);
     setState({
-      externalMergesData: {
+      shortlogData: {
         totals,
         perRepo,
         externalPRs,
@@ -549,10 +549,10 @@ const fetchExternalMerges = async (options = {}) => {
       },
     });
   } catch (error) {
-    console.error('Failed to fetch external merges:', error);
+    console.error('Failed to fetch shortlog:', error);
   } finally {
     stopProgress();
-    setState({ isFetchingExternalMerges: false });
+    setState({ isFetchingShortlog: false });
   }
 };
 
@@ -820,8 +820,8 @@ const refreshCurrentView = async (options = {}) => {
     return;
   }
 
-  if (state.showExternalMerges) {
-    await fetchExternalMerges();
+  if (state.showShortlog) {
+    await fetchShortlog();
     return;
   }
 
@@ -1175,10 +1175,10 @@ const initialState = {
   showNeedsReviewPRs: false,
   showRecentPRs: false,
   showRepoLinks: false,
-  showExternalMerges: false,
-  externalMergesData: null,
-  externalMergesSinceDate: localStorage.getItem(STORAGE_KEYS.externalMergesSinceDate) || `${new Date().getFullYear()}-01-01`,
-  isFetchingExternalMerges: false,
+  showShortlog: false,
+  shortlogData: null,
+  shortlogSinceDate: localStorage.getItem(STORAGE_KEYS.shortlogSinceDate) || `${new Date().getFullYear()}-01-01`,
+  isFetchingShortlog: false,
   selectedRepoIndex: -1,
   selectedPrIndex: -1,
   isFetchingOpenPRs: false,
@@ -1454,8 +1454,8 @@ const applyConfig = async () => {
     activeTeamSlug: '',
     selectedRepoIndex: -1,
     selectedPrIndex: -1,
-    showExternalMerges: false,
-    externalMergesData: null,
+    showShortlog: false,
+    shortlogData: null,
   });
 
   if (!canRefreshConfig(nextConfig)) {
@@ -1476,38 +1476,38 @@ const applyConfig = async () => {
   }
 };
 
-const renderExternalMergesView = () => {
-  externalMergesSinceDateInput.value = state.externalMergesSinceDate;
-  const { externalMergesData, isFetchingExternalMerges, config: { owner } } = state;
+const renderShortlogView = () => {
+  shortlogSinceDateInput.value = state.shortlogSinceDate;
+  const { shortlogData, isFetchingShortlog, config: { owner } } = state;
   const scopeLabel = state.activeTeamSlug ? ` <span class="view-summary">— team: ${state.activeTeamSlug}</span>` : '';
-  const spinnerOrCount = isFetchingExternalMerges
+  const spinnerOrCount = isFetchingShortlog
     ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
-    : externalMergesData
-      ? `${externalMergesData.totals.external} external`
+    : shortlogData
+      ? `${shortlogData.totals.external} external`
       : '—';
-  externalMergesHeaderTitle.innerHTML = `External merges (${spinnerOrCount})${scopeLabel}`;
+  shortlogHeaderTitle.innerHTML = `shortlog (${spinnerOrCount})${scopeLabel}`;
 
-  if (!externalMergesData && !isFetchingExternalMerges) {
-    externalMergesBody.innerHTML = '<div class="external-merges-empty">Press <strong>r</strong> to load external merge data.</div>';
+  if (!shortlogData && !isFetchingShortlog) {
+    shortlogBody.innerHTML = '<div class="shortlog-empty">Press <strong>r</strong> to load external merge data.</div>';
     return;
   }
-  if (!externalMergesData) {
-    externalMergesBody.innerHTML = '<div class="external-merges-empty">Loading…</div>';
+  if (!shortlogData) {
+    shortlogBody.innerHTML = '<div class="shortlog-empty">Loading…</div>';
     return;
   }
 
-  const { totals, perRepo, externalPRs, membersAllLoaded } = externalMergesData;
+  const { totals, perRepo, externalPRs, membersAllLoaded } = shortlogData;
   const warningBanner = !membersAllLoaded
-    ? `<div class="external-merges-warning">${ICONS.warning} Some team member lists failed to load; classifications may be inaccurate.</div>`
+    ? `<div class="shortlog-warning">${ICONS.warning} Some team member lists failed to load; classifications may be inaccurate.</div>`
     : '';
-  const summaryHtml = `<div class="external-merges-summary">Total: <strong>${totals.total}</strong> · External: <strong class="external-count">${totals.external}</strong> · Internal: <strong>${totals.internal}</strong> · Bots: <strong>${totals.bot}</strong></div>`;
+  const summaryHtml = `<div class="shortlog-summary">Total: <strong>${totals.total}</strong> · External: <strong class="external-count">${totals.external}</strong> · Internal: <strong>${totals.internal}</strong> · Bots: <strong>${totals.bot}</strong></div>`;
 
   const sortedRepos = [...perRepo.entries()]
     .filter(([, counts]) => counts.total > 0)
-    .sort((a, b) => b[1].external - a[1].external || a[0].localeCompare(b[0]));
+    .sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]));
   const tableRows = sortedRepos.map(([repoName, counts]) => `<tr><td><a href="https://github.com/${owner}/${repoName}" target="_blank" rel="noopener noreferrer">${repoName}</a></td><td class="count-cell">${counts.total}</td><td class="count-cell external-count">${counts.external}</td><td class="count-cell">${counts.internal}</td><td class="count-cell dim-count">${counts.bot}</td></tr>`).join('');
   const tableHtml = sortedRepos.length > 0
-    ? `<table class="external-merges-table"><thead><tr><th>Repository</th><th class="count-cell">Total</th><th class="count-cell">External</th><th class="count-cell">Internal</th><th class="count-cell">Bots</th></tr></thead><tbody>${tableRows}</tbody></table>`
+    ? `<table class="shortlog-table"><thead><tr><th>Repository</th><th class="count-cell">Total</th><th class="count-cell">External</th><th class="count-cell">Internal</th><th class="count-cell">Bots</th></tr></thead><tbody>${tableRows}</tbody></table>`
     : '';
 
   const prsByRepo = new Map();
@@ -1529,10 +1529,10 @@ const renderExternalMergesView = () => {
     }).join('');
     prListHtml = `<div class="external-prs-section"><h3 class="external-prs-heading">External pull requests (${externalPRs.length})</h3>${groupsHtml}</div>`;
   } else if (totals.total > 0) {
-    prListHtml = '<div class="external-merges-empty">No external PRs found in this period.</div>';
+    prListHtml = '<div class="shortlog-empty">No external PRs found in this period.</div>';
   }
 
-  externalMergesBody.innerHTML = warningBanner + summaryHtml + tableHtml + prListHtml;
+  shortlogBody.innerHTML = warningBanner + summaryHtml + tableHtml + prListHtml;
 };
 
 const render = () => {
@@ -1561,14 +1561,14 @@ const render = () => {
     openSettings();
     repoView.classList.add('hidden');
     prView.classList.add('hidden');
-    externalMergesView.classList.add('hidden');
+    shortlogView.classList.add('hidden');
     return;
   }
   settingsForm.style.display = 'none';
 
   if (getAllReposFromMappings(repos).length === 0) {
     repoView.classList.add('hidden');
-    externalMergesView.classList.add('hidden');
+    shortlogView.classList.add('hidden');
     const loadingMessage = state.isFetchingRepos
       ? 'Fetching configured team repositories...'
       : 'No repositories loaded yet. Press R to refresh team repositories.';
@@ -1579,15 +1579,15 @@ const render = () => {
     return;
   }
 
-  if (state.showExternalMerges) {
+  if (state.showShortlog) {
     repoView.classList.add('hidden');
     prView.classList.add('hidden');
-    externalMergesView.classList.remove('hidden');
-    renderCache.mode = 'external-merges';
-    renderExternalMergesView();
+    shortlogView.classList.remove('hidden');
+    renderCache.mode = 'shortlog';
+    renderShortlogView();
     return;
   }
-  externalMergesView.classList.add('hidden');
+  shortlogView.classList.add('hidden');
 
   if (showRepoLinks) {
     repoView.classList.remove('hidden');
@@ -1750,7 +1750,7 @@ const init = async () => {
 
   useInterval(() => {
     const repos = getVisibleRepos();
-    if (state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showExternalMerges && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
+    if (state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showShortlog && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
       refreshCurrentView().catch((error) => {
         console.error('Error refreshing PRs on interval', error);
       });
@@ -1780,13 +1780,13 @@ const init = async () => {
     settingsForm.setAttribute('data-initialized', 'true');
   }
 
-  externalMergesSinceDateInput.addEventListener('change', (event) => {
+  shortlogSinceDateInput.addEventListener('change', (event) => {
     const newDate = event.target.value;
-    if (!newDate || !state.showExternalMerges) return;
-    localStorage.setItem(STORAGE_KEYS.externalMergesSinceDate, newDate);
-    setState({ externalMergesSinceDate: newDate, externalMergesData: null });
-    fetchExternalMerges().catch((error) => {
-      console.error('Error fetching external merges after date change', error);
+    if (!newDate || !state.showShortlog) return;
+    localStorage.setItem(STORAGE_KEYS.shortlogSinceDate, newDate);
+    setState({ shortlogSinceDate: newDate, shortlogData: null });
+    fetchShortlog().catch((error) => {
+      console.error('Error fetching shortlog after date change', error);
     });
   });
 
@@ -1881,7 +1881,7 @@ const init = async () => {
 
     if (!showRepoLinks) {
       const displayPRs = renderCache.displayPRs;
-      const handled = !state.showExternalMerges && handleNavigation(
+      const handled = !state.showShortlog && handleNavigation(
         displayPRs,
         state.selectedPrIndex,
         'selectedPrIndex',
@@ -1898,7 +1898,7 @@ const init = async () => {
         setState({
           showRecentPRs: false,
           showRepoLinks: false,
-          showExternalMerges: false,
+          showShortlog: false,
           selectedRepoIndex: -1,
           selectedPrIndex: -1,
         });
@@ -1907,11 +1907,11 @@ const init = async () => {
         });
       },
       m: () => {
-        const showRecentPRs = !state.showRecentPRs || state.showRepoLinks || state.showExternalMerges;
+        const showRecentPRs = !state.showRecentPRs || state.showRepoLinks || state.showShortlog;
         setState({
           showRecentPRs,
           showRepoLinks: false,
-          showExternalMerges: false,
+          showShortlog: false,
           selectedRepoIndex: -1,
           selectedPrIndex: -1,
         });
@@ -1925,7 +1925,7 @@ const init = async () => {
           setState({
             showRepoLinks: false,
             showRecentPRs: false,
-            showExternalMerges: false,
+            showShortlog: false,
             selectedRepoIndex: -1,
             selectedPrIndex: -1,
           });
@@ -1937,26 +1937,26 @@ const init = async () => {
 
         setState({
           showRepoLinks: true,
-          showExternalMerges: false,
+          showShortlog: false,
           selectedRepoIndex: -1,
           selectedPrIndex: -1,
         });
       },
-      x: () => {
-        const needsFetch = !state.showExternalMerges
-          || !state.externalMergesData
-          || state.externalMergesData.sinceDate !== state.externalMergesSinceDate
-          || state.externalMergesData.activeTeamSlug !== state.activeTeamSlug;
+      s: () => {
+        const needsFetch = !state.showShortlog
+          || !state.shortlogData
+          || state.shortlogData.sinceDate !== state.shortlogSinceDate
+          || state.shortlogData.activeTeamSlug !== state.activeTeamSlug;
         setState({
-          showExternalMerges: true,
+          showShortlog: true,
           showRecentPRs: false,
           showRepoLinks: false,
           selectedRepoIndex: -1,
           selectedPrIndex: -1,
         });
         if (needsFetch) {
-          fetchExternalMerges().catch((error) => {
-            console.error('Error fetching external merges', error);
+          fetchShortlog().catch((error) => {
+            console.error('Error fetching shortlog', error);
           });
         }
       },
@@ -1964,9 +1964,9 @@ const init = async () => {
       n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs, selectedPrIndex: -1 }),
       r: () => {
         setState({ selectedPrIndex: -1, selectedRepoIndex: -1 });
-        if (state.showExternalMerges) {
-          fetchExternalMerges().catch((error) => {
-            console.error('Error refreshing external merges', error);
+        if (state.showShortlog) {
+          fetchShortlog().catch((error) => {
+            console.error('Error refreshing shortlog', error);
           });
           return;
         }
@@ -1975,12 +1975,12 @@ const init = async () => {
         });
       },
       R: () => {
-        setState({ externalMergesData: null });
+        setState({ shortlogData: null });
         localStorage.removeItem(STORAGE_KEYS.teamMembersCache);
         refreshAllTeamRepos()
           .then((config) => {
-            if (state.showExternalMerges) {
-              return fetchExternalMerges({ forceRefreshMembers: true });
+            if (state.showShortlog) {
+              return fetchShortlog({ forceRefreshMembers: true });
             }
             return refreshCurrentView({ configOverride: config, reposOverride: getAllConfiguredRepos(config), merge: false });
           })
@@ -1990,10 +1990,10 @@ const init = async () => {
       },
       t: () => {
         cycleActiveTeam();
-        if (state.showExternalMerges) {
-          setState({ externalMergesData: null });
-          fetchExternalMerges().catch((error) => {
-            console.error('Error refreshing external merges after team change', error);
+        if (state.showShortlog) {
+          setState({ shortlogData: null });
+          fetchShortlog().catch((error) => {
+            console.error('Error refreshing shortlog after team change', error);
           });
         }
       },
@@ -2029,7 +2029,7 @@ const init = async () => {
 
   document.addEventListener('visibilitychange', () => {
     const repos = getVisibleRepos();
-    if (document.visibilityState === 'visible' && state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showExternalMerges && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
+    if (document.visibilityState === 'visible' && state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showShortlog && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
       refreshCurrentView().catch((error) => {
         console.error('Error refreshing PRs on tab focus', error);
       });

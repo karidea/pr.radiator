@@ -14,7 +14,7 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 * **o** - Open PRs view
 * **m** - Merged PRs view
 * **l** - Repository list view
-* **x** - External merges view
+* **s** - Shortlog
 
 ### Filters
 * **d** - Toggle Dependabot PRs filter
@@ -34,11 +34,11 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 * **c** - Open configuration
 * **?** - Toggle keyboard shortcuts help
 
-## External Merges View (`x`)
-Shows PRs merged to **any branch** of the configured repositories by authors who are **not** members of the configured teams. Useful for tracking community or external contributions since a given date.
+## Shortlog (`s`)
+Shows PRs merged to **any branch** of the configured repositories since a given date, broken down by author type: external, internal, and bots. Useful for tracking the full merge landscape across all contributors.
 
 * Defaults to the start of the current year; date can be changed with the date picker in the header
-* Displays a total summary, per-repository breakdown (total / external / internal / bots), and a list of external PRs grouped by repository
+* Displays a total summary, per-repository breakdown (total / external / internal / bots) sorted by most merged, and a list of external PRs grouped by repository
 * Team member lists are fetched from GitHub and cached locally for 1 hour; press **R** to force a full refresh
 * Respects team scope cycling (**t**) to narrow repositories; internal logins always include members of all configured teams
 * Press **r** to reload data for the current date and scope

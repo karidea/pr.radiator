@@ -496,22 +496,22 @@ a {
   }
 }
 
-/* External merges view */
-.external-merges-header-row {
+/* Shortlog view */
+.shortlog-header-row {
   display: flex;
   align-items: baseline;
   gap: 12px;
   flex-wrap: wrap;
 }
 
-.external-merges-since-wrapper {
+.shortlog-since-wrapper {
   color: #8a8a6f;
   font-weight: 400;
   font-size: 11px;
   white-space: nowrap;
 }
 
-.external-merges-date-input {
+.shortlog-date-input {
   background-color: #23262d;
   border: 1px solid #3a3e44;
   color: #d8d8d8;
@@ -521,26 +521,26 @@ a {
   color-scheme: dark;
 }
 
-.external-merges-date-input:focus {
+.shortlog-date-input:focus {
   outline: none;
   border-color: #8f9aa7;
 }
 
-.external-merges-body {
+.shortlog-body {
   padding-top: 6px;
 }
 
-.external-merges-empty {
+.shortlog-empty {
   color: #8a8a6f;
   padding: 4px 0;
 }
 
-.external-merges-warning {
+.shortlog-warning {
   color: #dbab09;
   padding: 4px 0 8px;
 }
 
-.external-merges-summary {
+.shortlog-summary {
   padding: 4px 0 8px;
   color: #d8d8d8;
 }
@@ -553,20 +553,20 @@ a {
   color: #6a6a6a;
 }
 
-.external-merges-table {
+.shortlog-table {
   border-collapse: collapse;
   margin-bottom: 16px;
   font-size: 12px;
 }
 
-.external-merges-table th,
-.external-merges-table td {
+.shortlog-table th,
+.shortlog-table td {
   text-align: left;
   padding: 2px 12px 2px 0;
   white-space: nowrap;
 }
 
-.external-merges-table th {
+.shortlog-table th {
   color: #8a8a6f;
   font-weight: 600;
   text-transform: uppercase;
@@ -575,7 +575,7 @@ a {
   padding-bottom: 4px;
 }
 
-.external-merges-table td a {
+.shortlog-table td a {
   color: #49a29f;
 }
 
@@ -585,7 +585,7 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
-.external-merges-table th.count-cell {
+.shortlog-table th.count-cell {
   text-align: right;
 }
 
