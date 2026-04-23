@@ -1479,16 +1479,9 @@ const applyConfig = async () => {
 const renderShortlogView = () => {
   shortlogSinceDateInput.value = state.shortlogSinceDate;
   const { shortlogData, isFetchingShortlog, config: { owner } } = state;
-  const scopeLabel = state.activeTeamSlug ? ` <span class="view-summary">— team: ${state.activeTeamSlug}</span>` : '';
-  const spinnerOrCount = isFetchingShortlog
-    ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
-    : shortlogData
-      ? `${shortlogData.totals.external} external`
-      : '—';
-  shortlogHeaderTitle.innerHTML = `shortlog (${spinnerOrCount})${scopeLabel}`;
 
   if (!shortlogData && !isFetchingShortlog) {
-    shortlogBody.innerHTML = '<div class="shortlog-empty">Press <strong>r</strong> to load external merge data.</div>';
+    shortlogBody.innerHTML = '<div class="shortlog-empty">press <strong>r</strong> to load</div>';
     return;
   }
   if (!shortlogData) {
@@ -1584,6 +1577,17 @@ const render = () => {
     prView.classList.add('hidden');
     shortlogView.classList.remove('hidden');
     renderCache.mode = 'shortlog';
+    const { shortlogData, isFetchingShortlog } = state;
+    const badge = isFetchingShortlog
+      ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
+      : shortlogData ? shortlogData.totals.total : '—';
+    const [y, m, d] = state.shortlogSinceDate.split('-');
+    const sinceFormatted = `since ${parseInt(m)}/${parseInt(d)}/${y}`;
+    const shortlogSummaryParts = ['shortlog'];
+    if (scopeLabel) shortlogSummaryParts.push(scopeLabel);
+    shortlogSummaryParts.push(sinceFormatted);
+    const shortlogSummaryEl = `<span class="view-summary">— ${shortlogSummaryParts.join(' | ')}</span>`;
+    shortlogHeaderTitle.innerHTML = `Pull requests (${badge}) ${shortlogSummaryEl}`;
     renderShortlogView();
     return;
   }
