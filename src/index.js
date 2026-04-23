@@ -1505,14 +1505,12 @@ const renderShortlogView = () => {
   const warningBanner = !membersAllLoaded
     ? `<div class="shortlog-warning">${ICONS.warning} Some team member lists failed to load; classifications may be inaccurate.</div>`
     : '';
-  const summaryHtml = `<div class="shortlog-summary">Total: <strong>${totals.total}</strong> · External: <strong class="external-count">${totals.external}</strong> · Internal: <strong>${totals.internal}</strong> · Bots: <strong class="dim-count">${totals.bot}</strong></div>`;
-
   const sortedRepos = [...perRepo.entries()]
     .filter(([, counts]) => counts.total > 0)
     .sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]));
   const tableRows = sortedRepos.map(([repoName, counts]) => `<tr><td><a href="https://github.com/${owner}/${repoName}" target="_blank" rel="noopener noreferrer">${repoName}</a></td><td class="count-cell">${counts.total}</td><td class="count-cell external-count">${counts.external}</td><td class="count-cell">${counts.internal}</td><td class="count-cell dim-count">${counts.bot}</td></tr>`).join('');
   const tableHtml = sortedRepos.length > 0
-    ? `<table class="shortlog-table"><thead><tr><th>Repository</th><th class="count-cell">Total</th><th class="count-cell">External</th><th class="count-cell">Internal</th><th class="count-cell">Bots</th></tr></thead><tbody>${tableRows}</tbody></table>`
+    ? `<table class="shortlog-table"><thead><tr><th>Repository</th><th class="count-cell">Total (${totals.total})</th><th class="count-cell external-count">External (${totals.external})</th><th class="count-cell">Internal (${totals.internal})</th><th class="count-cell dim-count">Bots (${totals.bot})</th></tr></thead><tbody>${tableRows}</tbody></table>`
     : '';
 
   const visiblePRs = (filterType === 'all' || filterType === 'repo')
@@ -1578,7 +1576,7 @@ const renderShortlogView = () => {
     prListHtml = `<div class="shortlog-empty">No ${filterType === 'all' ? '' : `${filterType} `}PRs found in this period.</div>`;
   }
 
-  shortlogBody.innerHTML = warningBanner + summaryHtml + tableHtml + prListHtml;
+  shortlogBody.innerHTML = warningBanner + tableHtml + prListHtml;
 };
 
 const render = () => {
