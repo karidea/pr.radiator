@@ -7,7 +7,10 @@ const STORAGE_KEYS = {
   teams: 'PR_RADIATOR_TEAMS',
   repos: 'PR_RADIATOR_REPOS',
   ignoreRepos: 'PR_RADIATOR_IGNORE_REPOS',
+  extraRepos: 'PR_RADIATOR_EXTRA_REPOS',
   graphqlCostDebug: 'PR_RADIATOR_GRAPHQL_COST_DEBUG',
+  teamMembersCache: 'PR_RADIATOR_TEAM_MEMBERS_CACHE',
+  externalMergesSinceDate: 'PR_RADIATOR_EXTERNAL_SINCE_DATE',
 };
 
 const GRAPHQL_REPO_BATCH_SIZE = 2;
@@ -15,6 +18,8 @@ const DISCOVERY_BATCH_SIZE = 4;
 const RATE_LIMIT_COOLDOWN_THRESHOLD = 100;
 const RATE_LIMIT_RESET_BUFFER_MS = 1000;
 const STORAGE_WRITE_FRAME_DELAY = 16;
+const TEAM_MEMBERS_CACHE_TTL_MS = 60 * 60 * 1000;
+const EXTERNAL_MERGES_SEARCH_BATCH_SIZE = 10;
 
 const progressBar = document.getElementById('progress-bar');
 const repoRefreshStatus = document.getElementById('repo-refresh-status');
@@ -34,6 +39,10 @@ const ownerInput = document.getElementById('owner');
 const teamsInput = document.getElementById('teams');
 const tokenInput = document.getElementById('token');
 const applyConfigButton = document.getElementById('apply-config');
+const externalMergesView = document.getElementById('external-merges-view');
+const externalMergesHeaderTitle = document.getElementById('external-merges-header-title');
+const externalMergesBody = document.getElementById('external-merges-body');
+const externalMergesSinceDateInput = document.getElementById('external-merges-since');
 
 const parseStoredJSON = (key, fallback) => {
   try {
@@ -106,6 +115,7 @@ const flushPersistedConfig = () => {
   localStorage.setItem(STORAGE_KEYS.teams, JSON.stringify(config.teams));
   localStorage.setItem(STORAGE_KEYS.repos, JSON.stringify(config.repos));
   localStorage.setItem(STORAGE_KEYS.ignoreRepos, JSON.stringify(config.ignoreRepos));
+  localStorage.setItem(STORAGE_KEYS.extraRepos, JSON.stringify(config.extraRepos));
 };
 
 const persistConfig = (config) => {
@@ -170,6 +180,24 @@ const buildHydrationQuery = (owner, repoRequests) => {
     return `${getShortGraphQLAlias(repoIndex)}:repository(owner:"${owner}",name:"${repoName}"){${prQueries}}`;
   }).join(' ');
   return `query{${graphqlCostFragment} ${batchedRepos}}`;
+};
+
+const TeamMembersQuery = (owner, team, after = null) => {
+  const afterArg = after ? `, after: "${after}"` : '';
+  return `{organization(login:"${owner}"){team(slug:"${team}"){members(first:100${afterArg}){pageInfo{endCursor hasNextPage}nodes{login}}}}}`;
+};
+
+const externalMergesPRFields = 'number title url mergedAt author{__typename login} baseRefName repository{name}';
+
+const buildExternalMergesSearchQuery = (owner, repos, sinceDate) => {
+  const batchedSearches = repos
+    .map((repo, index) => `${getShortGraphQLAlias(index)}:search(type:ISSUE,first:100,query:"repo:${owner}/${repo} is:pr is:merged merged:>=${sinceDate}"){issueCount pageInfo{endCursor hasNextPage}nodes{...on PullRequest{${externalMergesPRFields}}}}`)
+    .join(' ');
+  return `query{${graphqlCostFragment} ${batchedSearches}}`;
+};
+
+const buildExternalMergesPaginationQuery = (owner, repo, sinceDate, cursor) => {
+  return `query{${graphqlCostFragment} search(type:ISSUE,first:100,after:"${cursor}",query:"repo:${owner}/${repo} is:pr is:merged merged:>=${sinceDate}"){pageInfo{endCursor hasNextPage}nodes{...on PullRequest{${externalMergesPRFields}}}}}`;
 };
 
 const chunkArray = (items, size) => Array.from(
@@ -294,9 +322,239 @@ const api = {
 
     return repoNames;
   },
+  queryTeamMembers: async (token, owner, team) => {
+    let hasNextPage = true;
+    let next = null;
+    const logins = [];
+
+    while (hasNextPage) {
+      const result = await api.fetchGraphQL(token, TeamMembersQuery(owner, team, next), { type: 'team-members' });
+      const members = result?.data?.organization?.team?.members;
+
+      if (!members) {
+        throw new Error(`Unable to load members for team ${team}`);
+      }
+
+      members.nodes.forEach((member) => {
+        if (member?.login) logins.push(member.login);
+      });
+      hasNextPage = members.pageInfo.hasNextPage;
+      next = members.pageInfo.endCursor;
+    }
+
+    return logins;
+  },
 };
 
 const prCacheKey = (repoName, number) => `${repoName}:${number}`;
+
+const BOT_LOGINS = new Set(['dependabot', 'github-actions', 'renovate', 'renovate-bot', 'snyk-bot']);
+
+const isBotLogin = (author) => {
+  if (!author) return false;
+  if (author.__typename === 'Bot') return true;
+  const login = (author.login || '').toLowerCase();
+  return login.endsWith('[bot]') || BOT_LOGINS.has(login);
+};
+
+const loadPersistedMemberCache = () => {
+  const raw = parseStoredJSON(STORAGE_KEYS.teamMembersCache, {});
+  const cache = new Map();
+  Object.entries(raw).forEach(([slug, entry]) => {
+    if (entry && Array.isArray(entry.logins)) {
+      cache.set(slug, { logins: new Set(entry.logins), fetchedAt: entry.fetchedAt || 0, error: false });
+    }
+  });
+  return cache;
+};
+
+const persistMemberCache = (cache) => {
+  const obj = {};
+  cache.forEach((entry, slug) => {
+    if (!entry.error) {
+      obj[slug] = { logins: [...entry.logins], fetchedAt: entry.fetchedAt };
+    }
+  });
+  localStorage.setItem(STORAGE_KEYS.teamMembersCache, JSON.stringify(obj));
+};
+
+const getInternalLoginsFromCache = (cache, teams) => {
+  const logins = new Set();
+  let allLoaded = true;
+  teams.forEach((slug) => {
+    const entry = cache.get(slug);
+    if (!entry || entry.error) {
+      allLoaded = false;
+      return;
+    }
+    entry.logins.forEach((login) => logins.add(login));
+  });
+  return { logins, allLoaded };
+};
+
+const refreshTeamMembersCache = async (token, owner, teams, existingCache = new Map()) => {
+  const now = Date.now();
+  const staleTeams = teams.filter((slug) => {
+    const entry = existingCache.get(slug);
+    return !entry || entry.error || (now - entry.fetchedAt) > TEAM_MEMBERS_CACHE_TTL_MS;
+  });
+  if (staleTeams.length === 0) return existingCache;
+
+  const results = await Promise.allSettled(
+    staleTeams.map(async (slug) => {
+      const teamLogins = await api.queryTeamMembers(token, owner, slug);
+      return { slug, logins: teamLogins };
+    })
+  );
+
+  const updatedCache = new Map(existingCache);
+  results.forEach((result, index) => {
+    const slug = staleTeams[index];
+    if (result.status === 'fulfilled') {
+      updatedCache.set(slug, { logins: new Set(result.value.logins), fetchedAt: now, error: false });
+    } else {
+      console.error(`Failed to fetch members for team ${slug}:`, result.reason);
+      const existing = updatedCache.get(slug);
+      updatedCache.set(slug, { logins: existing?.logins || new Set(), fetchedAt: existing?.fetchedAt || 0, error: true });
+    }
+  });
+
+  persistMemberCache(updatedCache);
+  return updatedCache;
+};
+
+const fetchExternalMergesData = async (token, owner, repos, ignoreRepos, sinceDate) => {
+  const filteredRepos = repos.filter((repo) => !ignoreRepos.includes(repo));
+  if (filteredRepos.length === 0) return [];
+
+  const allPRs = [];
+  const issueCountWarnings = [];
+  const chunks = chunkArray(filteredRepos, EXTERNAL_MERGES_SEARCH_BATCH_SIZE);
+  const reposNeedingPagination = [];
+
+  await Promise.all(chunks.map(async (chunk) => {
+    const query = buildExternalMergesSearchQuery(owner, chunk, sinceDate);
+    const payload = await api.fetchGraphQL(token, query, { type: 'external-search' });
+    const data = payload?.data || {};
+    chunk.forEach((repoName, index) => {
+      const alias = getShortGraphQLAlias(index);
+      const searchData = data[alias];
+      if (!searchData) return;
+      if (searchData.issueCount > 1000) {
+        issueCountWarnings.push(`${repoName} (${searchData.issueCount})`);
+      }
+      searchData.nodes.forEach((node) => {
+        if (node && node.url) allPRs.push(node);
+      });
+      if (searchData.pageInfo.hasNextPage) {
+        reposNeedingPagination.push({ repoName, cursor: searchData.pageInfo.endCursor });
+      }
+    });
+  }));
+
+  await Promise.all(reposNeedingPagination.map(async ({ repoName, cursor: initialCursor }) => {
+    let cursor = initialCursor;
+    let hasNextPage = true;
+    while (hasNextPage) {
+      const query = buildExternalMergesPaginationQuery(owner, repoName, sinceDate, cursor);
+      const payload = await api.fetchGraphQL(token, query, { type: 'external-search-page' });
+      const searchData = payload?.data?.search;
+      if (!searchData) break;
+      searchData.nodes.forEach((node) => {
+        if (node && node.url) allPRs.push(node);
+      });
+      hasNextPage = searchData.pageInfo.hasNextPage;
+      cursor = searchData.pageInfo.endCursor;
+    }
+  }));
+
+  if (issueCountWarnings.length > 0) {
+    console.warn(`⚠️ External merges: some repos may have incomplete results (>1000 PRs): ${issueCountWarnings.join(', ')}`);
+  }
+  return allPRs;
+};
+
+const classifyAndAggregateExternalMerges = (prs, internalLogins) => {
+  const totals = { total: 0, external: 0, internal: 0, bot: 0 };
+  const perRepo = new Map();
+  const externalPRs = [];
+
+  prs.forEach((pr) => {
+    const repoName = pr.repository?.name || 'unknown';
+    const author = pr.author;
+    if (!perRepo.has(repoName)) {
+      perRepo.set(repoName, { total: 0, external: 0, internal: 0, bot: 0 });
+    }
+    const counts = perRepo.get(repoName);
+    totals.total++;
+    counts.total++;
+    if (isBotLogin(author)) {
+      totals.bot++;
+      counts.bot++;
+    } else if (internalLogins.has(author?.login || '')) {
+      totals.internal++;
+      counts.internal++;
+    } else {
+      totals.external++;
+      counts.external++;
+      externalPRs.push({ ...pr, mergedAt: pr.mergedAt ? new Date(pr.mergedAt) : null });
+    }
+  });
+
+  externalPRs.sort((a, b) => {
+    if (!a.mergedAt) return 1;
+    if (!b.mergedAt) return -1;
+    return b.mergedAt.getTime() - a.mergedAt.getTime();
+  });
+
+  return { totals, perRepo, externalPRs };
+};
+
+const fetchExternalMerges = async (options = {}) => {
+  const { forceRefreshMembers = false } = options;
+  const { token, owner, teams, ignoreRepos } = state.config;
+  const sinceDate = state.externalMergesSinceDate;
+  if (!token || !owner || teams.length === 0) return;
+  if (shouldPauseGitHubRefresh()) {
+    renderRepoRefreshStatus();
+    return;
+  }
+  try {
+    setState({ isFetchingExternalMerges: true });
+    startProgress();
+    const repos = getVisibleRepos();
+    let membersCache = loadPersistedMemberCache();
+    if (forceRefreshMembers) {
+      teams.forEach((slug) => {
+        const entry = membersCache.get(slug);
+        if (entry) membersCache.set(slug, { ...entry, fetchedAt: 0 });
+      });
+    }
+    membersCache = await refreshTeamMembersCache(token, owner, teams, membersCache);
+    const { logins: internalLogins, allLoaded } = getInternalLoginsFromCache(membersCache, teams);
+    if (!allLoaded) {
+      console.warn('⚠️ External merges: some team member lists failed to load; classifications may be incomplete.');
+    }
+    const prs = await fetchExternalMergesData(token, owner, repos, ignoreRepos, sinceDate);
+    const { totals, perRepo, externalPRs } = classifyAndAggregateExternalMerges(prs, internalLogins);
+    setState({
+      externalMergesData: {
+        totals,
+        perRepo,
+        externalPRs,
+        sinceDate,
+        activeTeamSlug: state.activeTeamSlug,
+        fetchedAt: Date.now(),
+        membersAllLoaded: allLoaded,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to fetch external merges:', error);
+  } finally {
+    stopProgress();
+    setState({ isFetchingExternalMerges: false });
+  }
+};
 
 const getCommitConclusion = (headRefOid, commits) => commits?.nodes
   ?.find((currentNode) => currentNode.commit.oid === headRefOid)
@@ -559,6 +817,11 @@ const refreshCurrentView = async (options = {}) => {
 
   if (state.showRepoLinks) {
     render();
+    return;
+  }
+
+  if (state.showExternalMerges) {
+    await fetchExternalMerges();
     return;
   }
 
@@ -904,6 +1167,7 @@ const initialState = {
     teams: initialTeams,
     repos: initialRepos,
     ignoreRepos: parseStoredJSON(STORAGE_KEYS.ignoreRepos, []),
+    extraRepos: parseStoredJSON(STORAGE_KEYS.extraRepos, []),
   },
   PRs: [],
   recentPRs: [],
@@ -911,6 +1175,10 @@ const initialState = {
   showNeedsReviewPRs: false,
   showRecentPRs: false,
   showRepoLinks: false,
+  showExternalMerges: false,
+  externalMergesData: null,
+  externalMergesSinceDate: localStorage.getItem(STORAGE_KEYS.externalMergesSinceDate) || `${new Date().getFullYear()}-01-01`,
+  isFetchingExternalMerges: false,
   selectedRepoIndex: -1,
   selectedPrIndex: -1,
   isFetchingOpenPRs: false,
@@ -1186,6 +1454,8 @@ const applyConfig = async () => {
     activeTeamSlug: '',
     selectedRepoIndex: -1,
     selectedPrIndex: -1,
+    showExternalMerges: false,
+    externalMergesData: null,
   });
 
   if (!canRefreshConfig(nextConfig)) {
@@ -1204,6 +1474,65 @@ const applyConfig = async () => {
   } catch (error) {
     console.error('Error applying configuration', error);
   }
+};
+
+const renderExternalMergesView = () => {
+  externalMergesSinceDateInput.value = state.externalMergesSinceDate;
+  const { externalMergesData, isFetchingExternalMerges, config: { owner } } = state;
+  const scopeLabel = state.activeTeamSlug ? ` <span class="view-summary">— team: ${state.activeTeamSlug}</span>` : '';
+  const spinnerOrCount = isFetchingExternalMerges
+    ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
+    : externalMergesData
+      ? `${externalMergesData.totals.external} external`
+      : '—';
+  externalMergesHeaderTitle.innerHTML = `External merges (${spinnerOrCount})${scopeLabel}`;
+
+  if (!externalMergesData && !isFetchingExternalMerges) {
+    externalMergesBody.innerHTML = '<div class="external-merges-empty">Press <strong>r</strong> to load external merge data.</div>';
+    return;
+  }
+  if (!externalMergesData) {
+    externalMergesBody.innerHTML = '<div class="external-merges-empty">Loading…</div>';
+    return;
+  }
+
+  const { totals, perRepo, externalPRs, membersAllLoaded } = externalMergesData;
+  const warningBanner = !membersAllLoaded
+    ? `<div class="external-merges-warning">${ICONS.warning} Some team member lists failed to load; classifications may be inaccurate.</div>`
+    : '';
+  const summaryHtml = `<div class="external-merges-summary">Total: <strong>${totals.total}</strong> · External: <strong class="external-count">${totals.external}</strong> · Internal: <strong>${totals.internal}</strong> · Bots: <strong>${totals.bot}</strong></div>`;
+
+  const sortedRepos = [...perRepo.entries()]
+    .filter(([, counts]) => counts.total > 0)
+    .sort((a, b) => b[1].external - a[1].external || a[0].localeCompare(b[0]));
+  const tableRows = sortedRepos.map(([repoName, counts]) => `<tr><td><a href="https://github.com/${owner}/${repoName}" target="_blank" rel="noopener noreferrer">${repoName}</a></td><td class="count-cell">${counts.total}</td><td class="count-cell external-count">${counts.external}</td><td class="count-cell">${counts.internal}</td><td class="count-cell dim-count">${counts.bot}</td></tr>`).join('');
+  const tableHtml = sortedRepos.length > 0
+    ? `<table class="external-merges-table"><thead><tr><th>Repository</th><th class="count-cell">Total</th><th class="count-cell">External</th><th class="count-cell">Internal</th><th class="count-cell">Bots</th></tr></thead><tbody>${tableRows}</tbody></table>`
+    : '';
+
+  const prsByRepo = new Map();
+  externalPRs.forEach((pr) => {
+    const repoName = pr.repository?.name || 'unknown';
+    if (!prsByRepo.has(repoName)) prsByRepo.set(repoName, []);
+    prsByRepo.get(repoName).push(pr);
+  });
+  let prListHtml = '';
+  if (externalPRs.length > 0) {
+    const groupsHtml = [...prsByRepo.entries()].map(([repoName, repoPRs]) => {
+      const rowsHtml = repoPRs.map((pr) => {
+        const authorLogin = getActorLogin(pr.author, 'ghost');
+        const mergedAgo = pr.mergedAt ? formatCompactDistanceToNow(pr.mergedAt) : '';
+        const branch = pr.baseRefName ? ` · ${pr.baseRefName}` : '';
+        return `<li class="external-pr-item"><a href="${pr.url}" target="_blank" rel="noopener noreferrer">#${pr.number} ${pr.title}</a><span class="external-pr-meta"> — ${authorLogin}${mergedAgo ? ` · ${mergedAgo} ago` : ''}${branch}</span></li>`;
+      }).join('');
+      return `<div class="external-prs-repo-group"><div class="external-prs-repo-name"><a href="https://github.com/${owner}/${repoName}" target="_blank" rel="noopener noreferrer">${repoName}</a> (${repoPRs.length})</div><ul class="external-prs-list">${rowsHtml}</ul></div>`;
+    }).join('');
+    prListHtml = `<div class="external-prs-section"><h3 class="external-prs-heading">External pull requests (${externalPRs.length})</h3>${groupsHtml}</div>`;
+  } else if (totals.total > 0) {
+    prListHtml = '<div class="external-merges-empty">No external PRs found in this period.</div>';
+  }
+
+  externalMergesBody.innerHTML = warningBanner + summaryHtml + tableHtml + prListHtml;
 };
 
 const render = () => {
@@ -1232,12 +1561,14 @@ const render = () => {
     openSettings();
     repoView.classList.add('hidden');
     prView.classList.add('hidden');
+    externalMergesView.classList.add('hidden');
     return;
   }
   settingsForm.style.display = 'none';
 
   if (getAllReposFromMappings(repos).length === 0) {
     repoView.classList.add('hidden');
+    externalMergesView.classList.add('hidden');
     const loadingMessage = state.isFetchingRepos
       ? 'Fetching configured team repositories...'
       : 'No repositories loaded yet. Press R to refresh team repositories.';
@@ -1247,6 +1578,16 @@ const render = () => {
     recentPrView.classList.add('hidden');
     return;
   }
+
+  if (state.showExternalMerges) {
+    repoView.classList.add('hidden');
+    prView.classList.add('hidden');
+    externalMergesView.classList.remove('hidden');
+    renderCache.mode = 'external-merges';
+    renderExternalMergesView();
+    return;
+  }
+  externalMergesView.classList.add('hidden');
 
   if (showRepoLinks) {
     repoView.classList.remove('hidden');
@@ -1409,7 +1750,7 @@ const init = async () => {
 
   useInterval(() => {
     const repos = getVisibleRepos();
-    if (state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
+    if (state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showExternalMerges && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
       refreshCurrentView().catch((error) => {
         console.error('Error refreshing PRs on interval', error);
       });
@@ -1438,6 +1779,16 @@ const init = async () => {
     });
     settingsForm.setAttribute('data-initialized', 'true');
   }
+
+  externalMergesSinceDateInput.addEventListener('change', (event) => {
+    const newDate = event.target.value;
+    if (!newDate || !state.showExternalMerges) return;
+    localStorage.setItem(STORAGE_KEYS.externalMergesSinceDate, newDate);
+    setState({ externalMergesSinceDate: newDate, externalMergesData: null });
+    fetchExternalMerges().catch((error) => {
+      console.error('Error fetching external merges after date change', error);
+    });
+  });
 
   let lastKeyPress = { key: null, timestamp: 0 };
 
@@ -1530,7 +1881,7 @@ const init = async () => {
 
     if (!showRepoLinks) {
       const displayPRs = renderCache.displayPRs;
-      const handled = handleNavigation(
+      const handled = !state.showExternalMerges && handleNavigation(
         displayPRs,
         state.selectedPrIndex,
         'selectedPrIndex',
@@ -1547,6 +1898,7 @@ const init = async () => {
         setState({
           showRecentPRs: false,
           showRepoLinks: false,
+          showExternalMerges: false,
           selectedRepoIndex: -1,
           selectedPrIndex: -1,
         });
@@ -1555,10 +1907,11 @@ const init = async () => {
         });
       },
       m: () => {
-        const showRecentPRs = !state.showRecentPRs || state.showRepoLinks;
+        const showRecentPRs = !state.showRecentPRs || state.showRepoLinks || state.showExternalMerges;
         setState({
           showRecentPRs,
           showRepoLinks: false,
+          showExternalMerges: false,
           selectedRepoIndex: -1,
           selectedPrIndex: -1,
         });
@@ -1572,6 +1925,7 @@ const init = async () => {
           setState({
             showRepoLinks: false,
             showRecentPRs: false,
+            showExternalMerges: false,
             selectedRepoIndex: -1,
             selectedPrIndex: -1,
           });
@@ -1583,27 +1937,65 @@ const init = async () => {
 
         setState({
           showRepoLinks: true,
+          showExternalMerges: false,
           selectedRepoIndex: -1,
           selectedPrIndex: -1,
         });
+      },
+      x: () => {
+        const needsFetch = !state.showExternalMerges
+          || !state.externalMergesData
+          || state.externalMergesData.sinceDate !== state.externalMergesSinceDate
+          || state.externalMergesData.activeTeamSlug !== state.activeTeamSlug;
+        setState({
+          showExternalMerges: true,
+          showRecentPRs: false,
+          showRepoLinks: false,
+          selectedRepoIndex: -1,
+          selectedPrIndex: -1,
+        });
+        if (needsFetch) {
+          fetchExternalMerges().catch((error) => {
+            console.error('Error fetching external merges', error);
+          });
+        }
       },
       d: () => setState({ showDependabotPRs: !state.showDependabotPRs, selectedPrIndex: -1 }),
       n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs, selectedPrIndex: -1 }),
       r: () => {
         setState({ selectedPrIndex: -1, selectedRepoIndex: -1 });
+        if (state.showExternalMerges) {
+          fetchExternalMerges().catch((error) => {
+            console.error('Error refreshing external merges', error);
+          });
+          return;
+        }
         refreshCurrentView().catch((error) => {
           console.error('Error refreshing current view', error);
         });
       },
       R: () => {
+        setState({ externalMergesData: null });
+        localStorage.removeItem(STORAGE_KEYS.teamMembersCache);
         refreshAllTeamRepos()
-          .then((config) => refreshCurrentView({ configOverride: config, reposOverride: getAllConfiguredRepos(config), merge: false }))
+          .then((config) => {
+            if (state.showExternalMerges) {
+              return fetchExternalMerges({ forceRefreshMembers: true });
+            }
+            return refreshCurrentView({ configOverride: config, reposOverride: getAllConfiguredRepos(config), merge: false });
+          })
           .catch((error) => {
             console.error('Error refreshing team repositories', error);
           });
       },
       t: () => {
         cycleActiveTeam();
+        if (state.showExternalMerges) {
+          setState({ externalMergesData: null });
+          fetchExternalMerges().catch((error) => {
+            console.error('Error refreshing external merges after team change', error);
+          });
+        }
       },
       c: () => openSettings(),
       '?': () => {
@@ -1637,7 +2029,7 @@ const init = async () => {
 
   document.addEventListener('visibilitychange', () => {
     const repos = getVisibleRepos();
-    if (document.visibilityState === 'visible' && state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
+    if (document.visibilityState === 'visible' && state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showExternalMerges && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
       refreshCurrentView().catch((error) => {
         console.error('Error refreshing PRs on tab focus', error);
       });
