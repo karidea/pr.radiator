@@ -11,6 +11,7 @@ const STORAGE_KEYS = {
   graphqlCostDebug: 'PR_RADIATOR_GRAPHQL_COST_DEBUG',
   teamMembersCache: 'PR_RADIATOR_TEAM_MEMBERS_CACHE',
   shortlogSinceDate: 'PR_RADIATOR_SHORTLOG_SINCE_DATE',
+  recentPRsSinceDate: 'PR_RADIATOR_RECENT_PRS_SINCE_DATE',
 };
 
 const GRAPHQL_REPO_BATCH_SIZE = 2;
@@ -43,6 +44,7 @@ const shortlogView = document.getElementById('shortlog-view');
 const shortlogHeaderTitle = document.getElementById('shortlog-header-title');
 const shortlogBody = document.getElementById('shortlog-body');
 const shortlogSinceDateInput = document.getElementById('shortlog-since');
+const recentPrSinceDateInput = document.getElementById('recent-pr-since');
 
 const parseStoredJSON = (key, fallback) => {
   try {
@@ -640,8 +642,8 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
       return;
     }
 
-    const sinceOneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const results = await api.fetchRecentBatches(token, owner, filteredRepos, sinceOneWeekAgo);
+    const sinceDateTime = `${state.recentPRsSinceDate}T00:00:00.000Z`;
+    const results = await api.fetchRecentBatches(token, owner, filteredRepos, sinceDateTime);
     const fetchCompletedAt = performance.now();
     const refCommits = [];
     results.forEach(({ payload, repos: chunkRepos }) => {
@@ -1179,6 +1181,11 @@ const initialState = {
   },
   PRs: [],
   recentPRs: [],
+  recentPRsSinceDate: (() => {
+    const now = new Date();
+    const startOfMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    return localStorage.getItem(STORAGE_KEYS.recentPRsSinceDate) || startOfMonth;
+  })(),
   showDependabotPRs: false,
   showNeedsReviewPRs: false,
   showRecentPRs: false,
@@ -1717,6 +1724,7 @@ const render = () => {
   };
 
   if (state.showRecentPRs) {
+    recentPrSinceDateInput.value = state.recentPRsSinceDate;
     const count = displayPRs.length;
     const badge = state.isFetchingRecentPRs
       ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
@@ -1844,6 +1852,17 @@ const init = async () => {
     setState({ shortlogSinceDate: newDate, shortlogData: null });
     fetchShortlog().catch((error) => {
       console.error('Error fetching shortlog after date change', error);
+    });
+  });
+
+  recentPrSinceDateInput.addEventListener('change', (event) => {
+    const newDate = event.target.value;
+    if (!newDate || !state.showRecentPRs) return;
+    localStorage.setItem(STORAGE_KEYS.recentPRsSinceDate, newDate);
+    setState({ recentPRsSinceDate: newDate });
+    const { token, owner, ignoreRepos } = state.config;
+    fetchRecentPRs(token, owner, getVisibleRepos(), ignoreRepos).catch((error) => {
+      console.error('Error fetching merged PRs after date change', error);
     });
   });
 
