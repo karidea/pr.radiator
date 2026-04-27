@@ -12,6 +12,7 @@ const STORAGE_KEYS = {
   teamMembersCache: 'PR_RADIATOR_TEAM_MEMBERS_CACHE',
   shortlogSinceDate: 'PR_RADIATOR_SHORTLOG_SINCE_DATE',
   recentPRsSinceDate: 'PR_RADIATOR_RECENT_PRS_SINCE_DATE',
+  compactMode: 'PR_RADIATOR_COMPACT_MODE',
 };
 
 const GRAPHQL_REPO_BATCH_SIZE = 2;
@@ -968,6 +969,18 @@ const getCommitState = (headRefOid, commits) => {
   return `<span class="${className}">${icon}</span>`;
 };
 
+const getReviewState = (reviewDecision) => {
+  const reviewMap = {
+    APPROVED: {icon: ICONS.check, cls: 'approved'},
+    CHANGES_REQUESTED: {icon: ICONS.times, cls: 'changes-requested'},
+    COMMENTED: {icon: ICONS.warning, cls: 'commented'},
+    DISMISSED: {icon: ICONS.minus, cls: 'dismissed'},
+  };
+  if (!reviewDecision) return '';
+  const {icon, cls = 'commented'} = reviewMap[reviewDecision] || {};
+  return `<span class="${cls}">${icon || ''}</span>`;
+};
+
 const TimelineEvent = ({ count, author, createdAt, state: eventState }) => {
   const countBadge = (count ?? 1) > 1 ? `(${count})` : '';
   const authorWithCount = `${author}${countBadge}`;
@@ -1073,27 +1086,39 @@ const getPRPresentation = (pr, {
     };
   }
 
-  const { createdAt, reviews, comments, baseRefName, headRefOid, commits } = pr;
-  const events = combineReviewsAndComments(reviews, comments);
-  const commitState = getCommitState(headRefOid, commits);
+  const { createdAt, reviews, comments, baseRefName, headRefOid, commits, reviewDecision } = pr;
+const latestReview = reviews?.nodes?.slice().sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] || null;
+const commitState = getCommitState(headRefOid, commits);
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
   const branch = showBranch ? baseRefName : '';
   const ageClass = getAgeString(createdAt);
   const mainParts = [];
-  if (teamBadges) mainParts.push(teamBadges);
+  if (!state.compactMode && teamBadges) mainParts.unshift(teamBadges);  // Only full mode
   mainParts.push(commitState);
-  if (branch) mainParts.push(branch);
+  if (!state.compactMode && branch) mainParts.push(branch);
   mainParts.push(author);
   mainParts.push(prLink);
   mainParts.push(title);
-  const mainContent = mainParts.join(' ');
-
-  const eventLines = events.length > 0
-    ? `<div class="pr-event-lines">&nbsp;&nbsp;${events.map((event, eventIndex) => TimelineEvent({ ...event, key: eventIndex })).join('')}</div>`
-    : '';
+  let mainContent = mainParts.join(' ');
+  let eventLines = '';
+  if (!state.compactMode) {
+    const events = combineReviewsAndComments(reviews, comments);
+    eventLines = events.length > 0
+      ? `<div class="pr-event-lines">&nbsp;&nbsp;${events.map((event, eventIndex) => TimelineEvent({ ...event, key: eventIndex })).join('')}</div>`
+      : '';
+  } else if (latestReview) {
+    const reviewMap = {
+      APPROVED: {icon: ICONS.check, cls: 'approved'},
+      CHANGES_REQUESTED: {icon: ICONS.times, cls: 'changes-requested'},
+      COMMENTED: {icon: ICONS.warning, cls: 'commented'},
+      DISMISSED: {icon: ICONS.minus, cls: 'dismissed'},
+    };
+    const {icon, cls} = reviewMap[latestReview.state] || {icon: ICONS.warning, cls: 'commented'};
+    mainContent += ` <span class="${cls}">${latestReview.author.login}${icon}</span>`;
+  }
 
   return {
-    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${eventLines}`,
+    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${eventLines}` + (state.compactMode ? '\\|compact' : ''),
     ageMarkup,
     ageClass,
     mainContent,
@@ -1206,6 +1231,7 @@ const initialState = {
     isCoolingDown: false,
   },
   activeTeamSlug: '',
+  compactMode: localStorage.getItem(STORAGE_KEYS.compactMode) === 'true',
 };
 
 let state = { ...initialState };
@@ -1319,17 +1345,14 @@ const renderRepoRefreshStatus = () => {
     return;
   }
 
-  if (!state.isFetchingRepos) {
-    repoRefreshStatus.textContent = '';
-    repoRefreshStatus.classList.remove('active');
+  if (state.isFetchingRepos) {
+    const teamCount = state.config.teams.length;
+    repoRefreshStatus.textContent = `Refreshing team repositories for ${teamCount} team${teamCount === 1 ? '' : 's'}...`;
+    repoRefreshStatus.classList.remove('hidden');
+    repoRefreshStatus.classList.add('active');
+  } else {
     repoRefreshStatus.classList.add('hidden');
-    return;
   }
-
-  const teamCount = state.config.teams.length;
-  repoRefreshStatus.textContent = `Refreshing team repositories for ${teamCount} team${teamCount === 1 ? '' : 's'}...`;
-  repoRefreshStatus.classList.remove('hidden');
-  repoRefreshStatus.classList.add('active');
 };
 
 const setState = (updates) => {
@@ -1587,6 +1610,7 @@ const renderShortlogView = () => {
 };
 
 const render = () => {
+  console.log('RENDER compactMode:', state.compactMode);
   const {
     config: { token, owner, teams, repos },
     selectedRepoIndex,
@@ -1716,9 +1740,10 @@ const render = () => {
   const buildSectionHeader = (title, badgeContent, prState) => {
     const summaryParts = [];
     if (prState) summaryParts.push(prState.toLowerCase());
-    if (scopeLabel) summaryParts.push(scopeLabel);
-    if (isDependabotFilterActive()) summaryParts.push('+dependabot');
+    if (isDependabotFilterActive()) summaryParts.push('dependabot');
     if (isNeedsReviewFilterActive()) summaryParts.push('awaiting review');
+    if (prState === 'OPEN' && state.compactMode) summaryParts.push('compact');
+    if (scopeLabel) summaryParts.push(scopeLabel);
     const summaryEl = summaryParts.length > 0 ? `<span class="view-summary">— ${summaryParts.join(' | ')}</span>` : '';
     return `${title} (${badgeContent})${summaryEl ? ` ${summaryEl}` : ''}`;
   };
@@ -1759,6 +1784,10 @@ const render = () => {
     ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
     : count;
   openPrHeader.innerHTML = buildSectionHeader('Pull requests', badge, 'OPEN');
+  if (renderCache.lastCompactMode !== state.compactMode) {
+    openPrList.innerHTML = '';
+    renderCache.lastCompactMode = state.compactMode;
+  }
   syncPRList(openPrList, displayPRs, {
     isRecent: false,
     showBranch: true,
@@ -2077,6 +2106,11 @@ const init = async () => {
             console.error('Error refreshing shortlog after team change', error);
           });
         }
+      },
+      z: () => {
+        state.compactMode = !state.compactMode;
+        localStorage.setItem(STORAGE_KEYS.compactMode, state.compactMode);
+        render();
       },
       c: () => openSettings(),
       '?': () => {

@@ -629,3 +629,13 @@ a {
 .shortlog-pr-meta {
   color: #6a6a6a;
 }
+
+.pr-main-line.compact {
+  font-size: 11.5px;
+  font-family: monospace;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.pr-main-line.compact .pr-age {
+  width: 3ch;
+}
