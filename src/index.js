@@ -1118,7 +1118,7 @@ const commitState = getCommitState(headRefOid, commits);
   }
 
   return {
-    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${eventLines}` + (state.compactMode ? '\\|compact' : ''),
+    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${eventLines}` + (state.compactMode ? `|${latestReview?.author?.login ?? ''}|${latestReview?.state ?? ''}` : ''),
     ageMarkup,
     ageClass,
     mainContent,
