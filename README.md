@@ -3,53 +3,36 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 ![Example Screenshot](./example-screenshot.png)
 
 ## Features
-* Open PRs, merged PRs, and repository views
+* Open PRs, merged PRs, shortlog, and repository views
 * Mnemonic keyboard navigation and filters
 * GitHub team-based repository discovery
-* Browser-only setup with local configuration
+* Browser-only setup with local configuration. GitHub PAT (`PR_RADIATOR_TOKEN`) required: `repo`, `read:org` scopes (+ SSO for orgs; press `c` to configure).
 
 ## Keyboard Shortcuts
 
 ### Views
-* **o** - Open PRs view
-* **m** - Merged PRs view
-* **l** - Repository list view
-* **s** - Shortlog
+* **l** - repos
+* **m** - merged
+* **o** - open
+* **s** - shortlog
 
 ### Filters
-* **d** - Toggle Dependabot PRs filter
-* **n** - Toggle Needs Review filter
-* **t** - Cycle team scope
-* **f** - Cycle author filter (shortlog only: all → external → internal → bot → repo)
+* **d** - dependabot
+* **f** - cycle author
+* **i** - ignore
+* **n** - awaiting review
+* **t** - cycle team
+* **z** - compact
 
 ### Navigation
-* **j/k** - Navigate down/up
-* **gg** - Jump to first item
-* **G** - Jump to last item
-* **Enter** - Open selected item
+* **Enter** - open
+* **G** - bottom
+* **gg** - top
+* **j/k** - down/up
 
 ### Actions
-* **i** - Toggle ignore repository (repo view)
-* **r** - Refresh current view
-* **R** - Refresh configured team repositories
-* **c** - Open configuration
-* **?** - Toggle keyboard shortcuts help
-
-## Shortlog (`s`)
-Shows PRs merged to **any branch** of the configured repositories since a given date, broken down by author type: external, internal, and bots.
-
-* Defaults to the start of the current year; date can be changed with the date picker in the header
-* Displays a total summary, per-repository breakdown (total / external / internal / bots) sorted by most merged, and a PR list grouped by author sorted by contribution count
-* Press **f** to cycle the author filter: `all → external → internal → bot → repo`; default is `external`
-* In `all`/`external`/`internal`/`bot` modes, PRs are grouped by author sorted by contribution count; in `repo` mode PRs are grouped by repository with type-coded author names
-* Team member lists are fetched from GitHub and cached locally for 1 hour; press **R** to force a full refresh
-* Respects team scope cycling (**t**) to narrow repositories; internal logins always include members of all configured teams
-* Press **r** to reload data for the current date and scope
-
-
-* `PR_RADIATOR_TOKEN`: Github Personal Access Token (https://github.com/settings/tokens)
-  * `read:org, repo` scopes needed and SSO for organization needs to be enabled
-* `PR_RADIATOR_OWNER`: Github organization
-* `PR_RADIATOR_TEAMS`: Array of team slugs
-* `PR_RADIATOR_REPOS`: Array of objects in the shape `{ slug, repos }`
-* `PR_RADIATOR_IGNORE_REPOS`: Array of strings of the repos to ignore
+* **?** - help
+* **c** - config
+* **Esc** - close config
+* **r** - refresh PRs
+* **R** - refresh repos
