@@ -12,7 +12,6 @@ const STORAGE_KEYS = {
   teamMembersCache: 'PR_RADIATOR_TEAM_MEMBERS_CACHE',
   shortlogSinceDate: 'PR_RADIATOR_SHORTLOG_SINCE_DATE',
   recentPRsSinceDate: 'PR_RADIATOR_RECENT_PRS_SINCE_DATE',
-  compactMode: 'PR_RADIATOR_COMPACT_MODE',
 };
 
 const GRAPHQL_REPO_BATCH_SIZE = 2;
@@ -157,7 +156,7 @@ const innerRecentPRsQuery = 'mainRef:ref(qualifiedName:"refs/heads/main"){...R} 
 const buildRecentCommitHistoryFragment = (sinceDateTime) => `fragment R on Ref{target{... on Commit{history(first:25,since:"${sinceDateTime}"){nodes{committedDate messageHeadline parents{totalCount} associatedPullRequests(first:5){nodes{createdAt number title url author{login} repository{name}}}}}}}}`;
 
 const innerOpenPRDiscoveryQuery = 'pullRequests(last:15,states:OPEN){nodes{number updatedAt commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}';
-const openPRHydrationFields = 'title url createdAt updatedAt baseRefName headRefOid isDraft number author{login} comments(first:5){nodes{createdAt author{login}}} reviews(first:15){nodes{state createdAt author{login}}} commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewDecision';
+const openPRHydrationFields = 'title url createdAt updatedAt baseRefName headRefOid isDraft number author{login} reviews(first:15){nodes{state createdAt author{login}}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewDecision';
 const graphqlCostFragment = 'rateLimit{cost remaining resetAt}';
 
 const buildDiscoveryQuery = (owner, repos) => {
@@ -359,6 +358,12 @@ const isBotLogin = (author) => {
   if (author.__typename === 'Bot') return true;
   const login = (author.login || '').toLowerCase();
   return login.endsWith('[bot]') || BOT_LOGINS.has(login);
+};
+
+const isSonarQubeLogin = (author) => {
+  if (!author) return false;
+  const login = (typeof author === 'string' ? author : (author.login || '')).toLowerCase();
+  return login.includes('sonarqube');
 };
 
 const loadPersistedMemberCache = () => {
@@ -907,11 +912,13 @@ const ICONS = {
   times: `<svg stroke="currentColor" fill="none" stroke-width="3" stroke-linecap="round" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M6 6l12 12M18 6L6 18" /></svg>`,
   check: `<svg stroke="currentColor" fill="currentColor" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M173.898 439.404l-166.4-166.4c-9.997-9.997-9.997-26.206 0-36.204l36.203-36.204c9.997-9.998 26.207-9.998 36.204 0L192 312.69 432.095 72.596c9.997-9.997 26.207-9.997 36.204 0l36.203 36.204c9.997 9.997 9.997 26.206 0 36.204l-294.4 294.401c-9.998 9.997-26.207 9.997-36.204-.001z" /></svg>`,
   warning: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" /></svg>`,
+  sonarQube: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="1em" height="1em" class="event-icon"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2a10 10 0 0 1 10 10"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M2 12a10 10 0 0 1 10 10"/></svg>`,
 };
+
 const combineReviewsAndComments = (reviews, comments) => {
   const events = [];
 
-  reviews.nodes.forEach((review) => {
+  reviews?.nodes?.forEach((review) => {
     const currentState = review.state === 'COMMENTED' ? 'COMMENTED' : review.state;
     events.push({
       createdAt: review.createdAt,
@@ -920,7 +927,7 @@ const combineReviewsAndComments = (reviews, comments) => {
     });
   });
 
-  comments.nodes.forEach((comment) => {
+  comments?.nodes?.forEach((comment) => {
     events.push({
       createdAt: comment.createdAt,
       author: getActorLogin(comment.author),
@@ -967,18 +974,6 @@ const getCommitState = (headRefOid, commits) => {
   const className = conclusion.toLowerCase();
 
   return `<span class="${className}">${icon}</span>`;
-};
-
-const getReviewState = (reviewDecision) => {
-  const reviewMap = {
-    APPROVED: {icon: ICONS.check, cls: 'approved'},
-    CHANGES_REQUESTED: {icon: ICONS.times, cls: 'changes-requested'},
-    COMMENTED: {icon: ICONS.warning, cls: 'commented'},
-    DISMISSED: {icon: ICONS.minus, cls: 'dismissed'},
-  };
-  if (!reviewDecision) return '';
-  const {icon, cls = 'commented'} = reviewMap[reviewDecision] || {};
-  return `<span class="${cls}">${icon || ''}</span>`;
 };
 
 const TimelineEvent = ({ count, author, createdAt, state: eventState }) => {
@@ -1082,47 +1077,57 @@ const getPRPresentation = (pr, {
       ageMarkup,
       ageClass: '',
       mainContent,
-      eventLines: '',
     };
   }
 
-  const { createdAt, reviews, comments, baseRefName, headRefOid, commits, reviewDecision } = pr;
-const latestReview = reviews?.nodes?.slice().sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] || null;
-const commitState = getCommitState(headRefOid, commits);
+  const { createdAt, reviews, comments, baseRefName, headRefOid, commits } = pr;
+  const commitState = getCommitState(headRefOid, commits);
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
   const branch = showBranch ? baseRefName : '';
   const ageClass = getAgeString(createdAt);
+
+  const events = combineReviewsAndComments(reviews, comments);
+
+  const regularEvents = [];
+  let sonarEvent = null;
+  events.forEach((ev) => {
+    if (isSonarQubeLogin(ev.author)) {
+      sonarEvent = ev;
+    } else {
+      regularEvents.push(ev);
+    }
+  });
+
+  const activityParts = [];
+  if (sonarEvent) {
+    const countBadge = (sonarEvent.count ?? 1) > 1 ? `(${sonarEvent.count})` : '';
+    const authorWithCount = `${sonarEvent.author}${countBadge}`;
+    const formattedDate = sonarEvent.createdAt.toLocaleString();
+    const tooltip = `${authorWithCount} commented at ${formattedDate}`;
+    activityParts.push(`<span class="sonar" title="${tooltip}">${ICONS.sonarQube}</span>`);
+  }
+  activityParts.push(...regularEvents.map((event, eventIndex) => TimelineEvent({ ...event, key: eventIndex })));
+  const activity = activityParts.length > 0
+    ? ' ' + activityParts.join('')
+    : '';
+
   const mainParts = [];
-  if (!state.compactMode && teamBadges) mainParts.unshift(teamBadges);  // Only full mode
+  if (teamBadges) mainParts.push(teamBadges);
   mainParts.push(commitState);
-  if (!state.compactMode && branch) mainParts.push(branch);
+  if (branch) mainParts.push(branch);
   mainParts.push(author);
   mainParts.push(prLink);
   mainParts.push(title);
   let mainContent = mainParts.join(' ');
-  let eventLines = '';
-  if (!state.compactMode) {
-    const events = combineReviewsAndComments(reviews, comments);
-    eventLines = events.length > 0
-      ? `<div class="pr-event-lines">&nbsp;&nbsp;${events.map((event, eventIndex) => TimelineEvent({ ...event, key: eventIndex })).join('')}</div>`
-      : '';
-  } else if (latestReview) {
-    const reviewMap = {
-      APPROVED: {icon: ICONS.check, cls: 'approved'},
-      CHANGES_REQUESTED: {icon: ICONS.times, cls: 'changes-requested'},
-      COMMENTED: {icon: ICONS.warning, cls: 'commented'},
-      DISMISSED: {icon: ICONS.minus, cls: 'dismissed'},
-    };
-    const {icon, cls} = reviewMap[latestReview.state] || {icon: ICONS.warning, cls: 'commented'};
-    mainContent += ` <span class="${cls}">${latestReview.author.login}${icon}</span>`;
+  if (activity) {
+    mainContent += `<span class="pr-activity">${activity}</span>`;
   }
 
   return {
-    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${eventLines}` + (state.compactMode ? `|${latestReview?.author?.login ?? ''}|${latestReview?.state ?? ''}` : ''),
+    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${events.length}|${events.map(e => `${e.author}:${e.state}:${e.count||1}`).join(',')}`,
     ageMarkup,
     ageClass,
     mainContent,
-    eventLines,
   };
 };
 
@@ -1135,7 +1140,7 @@ const syncPRNode = (node, pr, presentation, index, isSelected, isRecent) => {
     const mainLineClass = isRecent
       ? 'pr-main-line'
       : `pr-main-line ${presentation.ageClass}`;
-    node.innerHTML = `<div class="${mainLineClass}">${presentation.ageMarkup} ${presentation.mainContent}</div>${presentation.eventLines}`;
+    node.innerHTML = `<div class="${mainLineClass}">${presentation.ageMarkup} ${presentation.mainContent}</div>`;
     node.dataset.signature = presentation.signature;
     return;
   }
@@ -1216,6 +1221,8 @@ const initialState = {
   showRecentPRs: false,
   showRepoLinks: false,
   showShortlog: false,
+  showTeamBadges: false,
+  showBranch: false,
   shortlogData: null,
   shortlogSinceDate: localStorage.getItem(STORAGE_KEYS.shortlogSinceDate) || `${new Date().getFullYear()}-01-01`,
   shortlogAuthorFilter: 'external',
@@ -1231,7 +1238,6 @@ const initialState = {
     isCoolingDown: false,
   },
   activeTeamSlug: '',
-  compactMode: localStorage.getItem(STORAGE_KEYS.compactMode) === 'true',
 };
 
 let state = { ...initialState };
@@ -1610,7 +1616,6 @@ const renderShortlogView = () => {
 };
 
 const render = () => {
-  console.log('RENDER compactMode:', state.compactMode);
   const {
     config: { token, owner, teams, repos },
     selectedRepoIndex,
@@ -1625,7 +1630,7 @@ const render = () => {
       : teams.length === 1
         ? `team: ${teams[0]}`
         : 'all teams';
-  const showInlineTeamBadges = teams.length > 1 && !state.activeTeamSlug;
+  const showInlineTeamBadges = state.showTeamBadges && teams.length > 1 && !state.activeTeamSlug;
   const teamBadgeCache = new Map();
   document.title = 'PR Radiator';
   renderCache.visibleRepos = visibleRepos;
@@ -1742,7 +1747,6 @@ const render = () => {
     if (prState) summaryParts.push(prState.toLowerCase());
     if (isDependabotFilterActive()) summaryParts.push('dependabot');
     if (isNeedsReviewFilterActive()) summaryParts.push('awaiting review');
-    if (prState === 'OPEN' && state.compactMode) summaryParts.push('compact');
     if (scopeLabel) summaryParts.push(scopeLabel);
     const summaryEl = summaryParts.length > 0 ? `<span class="view-summary">— ${summaryParts.join(' | ')}</span>` : '';
     return `${title} (${badgeContent})${summaryEl ? ` ${summaryEl}` : ''}`;
@@ -1757,7 +1761,7 @@ const render = () => {
     recentPrHeader.innerHTML = buildSectionHeader('Pull requests', badge, 'MERGED');
     syncPRList(recentPrList, displayPRs, {
       isRecent: true,
-      showBranch: false,
+      showBranch: state.showBranch,
       showInlineTeamBadges,
       teamBadgeCache,
       selectedPrIndex,
@@ -1784,13 +1788,9 @@ const render = () => {
     ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
     : count;
   openPrHeader.innerHTML = buildSectionHeader('Pull requests', badge, 'OPEN');
-  if (renderCache.lastCompactMode !== state.compactMode) {
-    openPrList.innerHTML = '';
-    renderCache.lastCompactMode = state.compactMode;
-  }
   syncPRList(openPrList, displayPRs, {
     isRecent: false,
-    showBranch: true,
+    showBranch: state.showBranch,
     showInlineTeamBadges,
     teamBadgeCache,
     selectedPrIndex,
@@ -2067,6 +2067,8 @@ const init = async () => {
       },
       d: () => setState({ showDependabotPRs: !state.showDependabotPRs, selectedPrIndex: -1 }),
       n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs, selectedPrIndex: -1 }),
+      b: () => setState({ showTeamBadges: !state.showTeamBadges }),
+      B: () => setState({ showBranch: !state.showBranch }),
       f: () => {
         if (!state.showShortlog) return;
         const cycle = { all: 'external', external: 'internal', internal: 'bot', bot: 'repo', repo: 'all' };
@@ -2106,11 +2108,6 @@ const init = async () => {
             console.error('Error refreshing shortlog after team change', error);
           });
         }
-      },
-      z: () => {
-        state.compactMode = !state.compactMode;
-        localStorage.setItem(STORAGE_KEYS.compactMode, state.compactMode);
-        render();
       },
       c: () => openSettings(),
       '?': () => {

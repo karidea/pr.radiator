@@ -270,7 +270,7 @@ a {
 .event-group {
   display: inline-flex;
   align-items: center;
-  margin-right: 8px;
+  margin-right: 6px;
 }
 
 .event-group .event-icon {
@@ -435,8 +435,19 @@ a {
   text-align: right;
 }
 
-.pr-event-lines {
-  padding: 0 4px;
+.pr-activity {
+  color: #8a8a6f;
+  margin-left: 4px;
+}
+
+.sonar {
+  font-size: 0.8em;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.sonar .event-icon {
+  color: #00A3E0; /* SonarQube blue (associated with Server) */
 }
 
 .team-badges {
@@ -467,9 +478,8 @@ a {
   position: sticky;
   top: 0;
   z-index: 10;
-  padding-bottom: 4px;
+  padding-bottom: 5px;
   background-color: #1d1f24;
-  border-bottom: 1px solid #2b2f36;
   color: #fabd2f;
   font-size: 12px;
   font-weight: 600;
@@ -628,14 +638,4 @@ a {
 
 .shortlog-pr-meta {
   color: #6a6a6a;
-}
-
-.pr-main-line.compact {
-  font-size: 11.5px;
-  font-family: monospace;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-.pr-main-line.compact .pr-age {
-  width: 3ch;
 }

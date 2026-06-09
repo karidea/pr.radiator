@@ -17,12 +17,13 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 * **s** - shortlog
 
 ### Filters
+* **b** - team badges
+* **B** - branches
 * **d** - dependabot
 * **f** - cycle author
 * **i** - ignore
 * **n** - awaiting review
 * **t** - cycle team
-* **z** - compact
 
 ### Navigation
 * **Enter** - open
