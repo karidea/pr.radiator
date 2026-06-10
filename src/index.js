@@ -12,6 +12,7 @@ const STORAGE_KEYS = {
   teamMembersCache: 'PR_RADIATOR_TEAM_MEMBERS_CACHE',
   shortlogSinceDate: 'PR_RADIATOR_SHORTLOG_SINCE_DATE',
   recentPRsSinceDate: 'PR_RADIATOR_RECENT_PRS_SINCE_DATE',
+  activityOnSeparateLine: 'PR_RADIATOR_ACTIVITY_SEPARATE_LINE',
 };
 
 const GRAPHQL_REPO_BATCH_SIZE = 2;
@@ -1092,6 +1093,7 @@ const getPRPresentation = (pr, {
   showBranch = false,
   showInlineTeamBadges = false,
   teamBadgeCache = null,
+  activityOnSeparateLine = false,
 } = {}) => {
   const { number, title, url, repository, teamSlugs = [] } = pr;
   const teamBadges = getTeamBadgesMarkup(teamSlugs, showInlineTeamBadges, teamBadgeCache);
@@ -1154,24 +1156,23 @@ const getPRPresentation = (pr, {
   mainParts.push(author);
   mainParts.push(prLink);
   mainParts.push(title);
-  let mainContent = mainParts.join(' ');
-  if (activity) {
-    mainContent += `<span class="pr-activity">${activity}</span>`;
-  }
+  const mainCore = mainParts.join(' ');
+  const activitySpan = activity ? `<span class="pr-activity">${activity}</span>` : '';
 
   return {
     signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${events.length}|${events.map(e => {
       const flag = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED') ? (e.isActive ? '1' : '0') : '';
       return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}`;
-    }).join(',')}`,
+    }).join(',')}|act:${activityOnSeparateLine ? 'b' : 'i'}`,
     ageMarkup,
     ageClass,
-    mainContent,
+    mainCore,
+    activitySpan,
   };
 };
 
-const syncPRNode = (node, pr, presentation, index, isSelected, isRecent) => {
-  node.className = `pr-item${isSelected ? ' selected' : ''}`;
+const syncPRNode = (node, pr, presentation, index, isSelected, isRecent, activityOnSeparateLine = false) => {
+  node.className = `pr-item${isSelected ? ' selected' : ''}${activityOnSeparateLine ? ' activity-below' : ''}`;
   node.dataset.index = `${index}`;
   node.dataset.url = pr.url;
 
@@ -1179,7 +1180,18 @@ const syncPRNode = (node, pr, presentation, index, isSelected, isRecent) => {
     const mainLineClass = isRecent
       ? 'pr-main-line'
       : `pr-main-line ${presentation.ageClass}`;
-    node.innerHTML = `<div class="${mainLineClass}">${presentation.ageMarkup} ${presentation.mainContent}</div>`;
+    const ageAndCore = `${presentation.ageMarkup} ${presentation.mainCore || presentation.mainContent}`;
+    let innerHTML;
+    if (!isRecent && activityOnSeparateLine && presentation.activitySpan) {
+      innerHTML = `<div class="${mainLineClass}">${ageAndCore}</div><div class="pr-activity-line">${presentation.activitySpan}</div>`;
+    } else {
+      let combined = ageAndCore;
+      if (!isRecent && presentation.activitySpan) {
+        combined += ` ${presentation.activitySpan}`;
+      }
+      innerHTML = `<div class="${mainLineClass}">${combined}</div>`;
+    }
+    node.innerHTML = innerHTML;
     node.dataset.signature = presentation.signature;
     return;
   }
@@ -1205,6 +1217,7 @@ const syncPRList = (listEl, displayPRs, {
   showInlineTeamBadges = false,
   teamBadgeCache = null,
   selectedPrIndex = -1,
+  activityOnSeparateLine = false,
 } = {}) => {
   const existingNodesByUrl = new Map(
     Array.from(listEl.children).map((child) => [child.dataset.url, child])
@@ -1218,6 +1231,7 @@ const syncPRList = (listEl, displayPRs, {
       showBranch,
       showInlineTeamBadges,
       teamBadgeCache,
+      activityOnSeparateLine,
     });
     let node = existingNodesByUrl.get(pr.url);
 
@@ -1227,7 +1241,7 @@ const syncPRList = (listEl, displayPRs, {
       existingNodesByUrl.delete(pr.url);
     }
 
-    syncPRNode(node, pr, presentation, index, index === selectedPrIndex, isRecent);
+    syncPRNode(node, pr, presentation, index, index === selectedPrIndex, isRecent, activityOnSeparateLine);
 
     if (node !== nextSibling) {
       listEl.insertBefore(node, nextSibling);
@@ -1262,6 +1276,7 @@ const initialState = {
   showShortlog: false,
   showTeamBadges: false,
   showBranch: false,
+  activityOnSeparateLine: localStorage.getItem(STORAGE_KEYS.activityOnSeparateLine) === 'true',
   shortlogData: null,
   shortlogSinceDate: localStorage.getItem(STORAGE_KEYS.shortlogSinceDate) || `${new Date().getFullYear()}-01-01`,
   shortlogAuthorFilter: 'external',
@@ -1804,6 +1819,7 @@ const render = () => {
       showInlineTeamBadges,
       teamBadgeCache,
       selectedPrIndex,
+      activityOnSeparateLine: state.activityOnSeparateLine,
     });
     document.title = `(${count}) PR Radiator`;
 
@@ -1833,6 +1849,7 @@ const render = () => {
     showInlineTeamBadges,
     teamBadgeCache,
     selectedPrIndex,
+    activityOnSeparateLine: state.activityOnSeparateLine,
   });
   document.title = `(${count}) PR Radiator`;
 
@@ -2108,6 +2125,11 @@ const init = async () => {
       n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs, selectedPrIndex: -1 }),
       b: () => setState({ showTeamBadges: !state.showTeamBadges }),
       B: () => setState({ showBranch: !state.showBranch }),
+      A: () => {
+        const next = !state.activityOnSeparateLine;
+        localStorage.setItem(STORAGE_KEYS.activityOnSeparateLine, next);
+        setState({ activityOnSeparateLine: next });
+      },
       f: () => {
         if (!state.showShortlog) return;
         const cycle = { all: 'external', external: 'internal', internal: 'bot', bot: 'repo', repo: 'all' };

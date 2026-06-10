@@ -463,6 +463,31 @@ a {
   margin-left: 4px;
 }
 
+.pr-activity-line {
+  color: #8a8a6f;
+  margin-left: 4ch;
+  padding-left: 3px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.pr-item.selected .pr-main-line {
+  background-color: #3a3e44;
+}
+
+.pr-item.selected:not(.activity-below) .pr-main-line {
+  border-radius: 4px;
+}
+
+.pr-item.selected.activity-below .pr-main-line {
+  border-radius: 4px 4px 0 0;
+}
+
+.pr-item.selected.activity-below .pr-activity-line {
+  background-color: #3a3e44;
+  border-radius: 0 0 4px 4px;
+}
+
 .sonar {
   font-size: 0.8em;
   vertical-align: middle;

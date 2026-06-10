@@ -19,6 +19,7 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 ### Filters
 * **b** - team badges
 * **B** - branches
+* **A** - activity on separate line
 * **d** - dependabot
 * **f** - cycle author
 * **i** - ignore
