@@ -948,6 +948,22 @@ const combineReviewsAndComments = (reviews, comments) => {
   });
   if (currentEvent) compressedEvents.push(currentEvent);
 
+  // Mark the most recent decision state per author as active.
+  // Earlier APPROVED/CHANGES_REQUESTED from the same author are stale (history only).
+  const latestDecisionIndexByAuthor = new Map();
+  compressedEvents.forEach((ev, idx) => {
+    if (ev.state === 'APPROVED' || ev.state === 'CHANGES_REQUESTED' || ev.state === 'DISMISSED') {
+      latestDecisionIndexByAuthor.set(ev.author, idx);
+    }
+  });
+  compressedEvents.forEach((ev, idx) => {
+    if (ev.state === 'APPROVED' || ev.state === 'CHANGES_REQUESTED') {
+      ev.isActive = latestDecisionIndexByAuthor.get(ev.author) === idx;
+    } else {
+      ev.isActive = true;
+    }
+  });
+
   return compressedEvents;
 };
 
@@ -976,18 +992,22 @@ const getCommitState = (headRefOid, commits) => {
   return `<span class="${className}">${icon}</span>`;
 };
 
-const TimelineEvent = ({ count, author, createdAt, state: eventState }) => {
+const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true }) => {
   const countBadge = (count ?? 1) > 1 ? `(${count})` : '';
   const authorWithCount = `${author}${countBadge}`;
   const formattedDate = createdAt.toLocaleString();
+  const isStale = !isActive && (eventState === 'APPROVED' || eventState === 'CHANGES_REQUESTED');
   let tooltip = `${authorWithCount} ${eventState.toLowerCase()} at ${formattedDate}`;
 
   if (eventState === 'APPROVED') {
-    return `<span class="event-group approved" title="${tooltip}">${authorWithCount}${ICONS.check}</span>`;
+    if (isStale) tooltip += ' (stale)';
+    const cls = `event-group approved${isStale ? ' stale' : ''}`;
+    return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.check}</span>`;
   }
   if (eventState === 'CHANGES_REQUESTED') {
-    tooltip = `${authorWithCount} requested changes at ${formattedDate}`;
-    return `<span class="event-group changes-requested" title="${tooltip}">${authorWithCount}${ICONS.times}</span>`;
+    tooltip = `${authorWithCount} requested changes at ${formattedDate}${isStale ? ' (stale)' : ''}`;
+    const cls = `event-group changes-requested${isStale ? ' stale' : ''}`;
+    return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.times}</span>`;
   }
   if (eventState === 'COMMENTED') {
     tooltip = `${authorWithCount} commented at ${formattedDate}`;
@@ -1124,7 +1144,10 @@ const getPRPresentation = (pr, {
   }
 
   return {
-    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${events.length}|${events.map(e => `${e.author}:${e.state}:${e.count||1}`).join(',')}`,
+    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${events.length}|${events.map(e => {
+      const flag = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED') ? (e.isActive ? '1' : '0') : '';
+      return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}`;
+    }).join(',')}`,
     ageMarkup,
     ageClass,
     mainContent,

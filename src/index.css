@@ -267,6 +267,29 @@ a {
   text-decoration: line-through;
 }
 
+/* Stale (superseded) review states — same hue as active, but dimmed so only the
+   author's latest decision stands out. Opacity keeps the color identity while
+   reducing visual weight. */
+.event-group.stale {
+  opacity: 0.68;
+}
+
+.event-group.approved.stale {
+  color: #22863a;
+}
+.event-group.changes-requested.stale {
+  color: red;
+}
+
+.event-group.approved.stale .event-icon {
+  color: #22863a;
+  filter: none;
+}
+.event-group.changes-requested.stale .event-icon {
+  color: red;
+  transform: none;
+}
+
 .event-group {
   display: inline-flex;
   align-items: center;
