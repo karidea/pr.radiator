@@ -156,7 +156,8 @@ const innerRecentPRsQuery = 'mainRef:ref(qualifiedName:"refs/heads/main"){...R} 
 const buildRecentCommitHistoryFragment = (sinceDateTime) => `fragment R on Ref{target{... on Commit{history(first:25,since:"${sinceDateTime}"){nodes{committedDate messageHeadline parents{totalCount} associatedPullRequests(first:5){nodes{createdAt number title url author{login} repository{name}}}}}}}}`;
 
 const innerOpenPRDiscoveryQuery = 'pullRequests(last:15,states:OPEN){nodes{number updatedAt commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}';
-const openPRHydrationFields = 'title url createdAt updatedAt baseRefName headRefOid isDraft number author{login} reviews(first:15){nodes{state createdAt author{login}}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewDecision';
+const commitStatusFields = 'oid statusCheckRollup{state contexts(first:25){nodes{__typename ... on StatusContext{context state} ... on CheckRun{name conclusion status}}}}';
+const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft number author{login} reviews(first:15){nodes{state createdAt author{login}}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
 const graphqlCostFragment = 'rateLimit{cost remaining resetAt}';
 
 const buildDiscoveryQuery = (owner, repos) => {
@@ -364,6 +365,18 @@ const isSonarQubeLogin = (author) => {
   if (!author) return false;
   const login = (typeof author === 'string' ? author : (author.login || '')).toLowerCase();
   return login.includes('sonarqube');
+};
+
+const isSonarQubeFailing = (pr) => {
+  const commit = pr.commits?.nodes?.[0]?.commit;
+  const contexts = commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  return contexts.some((ctx) => {
+    if (!ctx) return false;
+    const name = (ctx.name || ctx.context || '').toLowerCase();
+    if (!name.includes('sonar')) return false;
+    const state = (ctx.conclusion || ctx.state || '').toUpperCase();
+    return state === 'FAILURE' || state === 'FAILED' || state === 'ERROR';
+  });
 };
 
 const loadPersistedMemberCache = () => {
@@ -1123,8 +1136,11 @@ const getPRPresentation = (pr, {
     const countBadge = (sonarEvent.count ?? 1) > 1 ? `(${sonarEvent.count})` : '';
     const authorWithCount = `${sonarEvent.author}${countBadge}`;
     const formattedDate = sonarEvent.createdAt.toLocaleString();
-    const tooltip = `${authorWithCount} commented at ${formattedDate}`;
-    activityParts.push(`<span class="sonar" title="${tooltip}">${ICONS.sonarQube}</span>`);
+    let tooltip = `${authorWithCount} commented at ${formattedDate}`;
+    const failing = isSonarQubeFailing(pr);
+    if (failing) tooltip = `${authorWithCount} quality gate failed at ${formattedDate}`;
+    const sonarClass = failing ? 'sonar failure' : 'sonar';
+    activityParts.push(`<span class="${sonarClass}" title="${tooltip}">${ICONS.sonarQube}</span>`);
   }
   activityParts.push(...regularEvents.map((event, eventIndex) => TimelineEvent({ ...event, key: eventIndex })));
   const activity = activityParts.length > 0

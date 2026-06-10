@@ -473,6 +473,12 @@ a {
   color: #00A3E0; /* SonarQube blue (associated with Server) */
 }
 
+.sonar.failure .event-icon {
+  color: red;
+  transform: scale(1.08);
+  transform-origin: center;
+}
+
 .team-badges {
   display: inline-flex;
   flex-wrap: wrap;
