@@ -290,6 +290,34 @@ a {
   transform: none;
 }
 
+.event-group.approved.muted,
+.event-group.changes-requested.muted {
+  opacity: 0.65;
+}
+
+.event-group.approved.muted {
+  color: #7aa87a;
+  font-weight: 400;
+}
+.event-group.changes-requested.muted {
+  color: #c17a7a;
+  font-weight: 400;
+}
+
+.event-group.approved.muted .event-icon {
+  color: #7aa87a;
+  filter: none;
+}
+.event-group.changes-requested.muted .event-icon {
+  color: #c17a7a;
+  transform: none;
+}
+
+.event-group.approved:not(.muted),
+.event-group.changes-requested:not(.muted) {
+  font-weight: 600;
+}
+
 .event-group {
   display: inline-flex;
   align-items: center;

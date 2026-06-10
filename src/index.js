@@ -355,6 +355,20 @@ const prCacheKey = (repoName, number) => `${repoName}:${number}`;
 
 const BOT_LOGINS = new Set(['dependabot', 'github-actions', 'renovate', 'renovate-bot', 'snyk-bot']);
 
+const isPrivilegedApprover = (repoName, login) => {
+  if (!repoName || !login) return false;
+  const teamSlugs = getRepoTeamSlugs(repoName);
+  if (teamSlugs.length === 0) return false;
+  const cache = loadPersistedMemberCache();
+  const { logins: teamLogins } = getInternalLoginsFromCache(cache, teamSlugs);
+  const lowerLogin = login.toLowerCase();
+  for (const teamLogin of teamLogins) {
+    if (teamLogin.toLowerCase() === lowerLogin) return true;
+  }
+  return false;
+};
+
+
 const isBotLogin = (author) => {
   if (!author) return false;
   if (author.__typename === 'Bot') return true;
@@ -622,6 +636,8 @@ const hydrateOpenPRs = async (token, owner, repoRequests) => {
   return hydratedPRs;
 };
 
+
+
 const decoratePullRequest = (pr, repoName) => ({
   ...pr,
   repository: { name: repoName },
@@ -798,6 +814,7 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
       }
       knownDraftTimestamps.delete(key);
     });
+
     const hydratedByKey = new Map(
       hydratedPRs.map((pr) => [prCacheKey(pr.repository.name, pr.number), pr])
     );
@@ -809,6 +826,7 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
       })
       .filter((pr) => pr && !pr.isDraft)
       .sort(sortByCreatedAt);
+
     const transformCompletedAt = performance.now();
 
     const renderStartedAt = performance.now();
@@ -909,6 +927,7 @@ const refreshAllTeamRepos = async (configOverride = state.config) => {
     });
 
     console.log(`✅ Team repositories refreshed (${getAllReposFromMappings(nextConfig.repos).length} repos total)`);
+    refreshTeamMembersCache(token, owner, teams, loadPersistedMemberCache()).catch(() => {});
     return nextConfig;
   } catch (error) {
     console.error('Failed to refresh team repositories:', error);
@@ -1006,21 +1025,25 @@ const getCommitState = (headRefOid, commits) => {
   return `<span class="${className}">${icon}</span>`;
 };
 
-const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true }) => {
+const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true, isPrivileged: isPrivilegedProp }) => {
   const countBadge = (count ?? 1) > 1 ? `(${count})` : '';
   const authorWithCount = `${author}${countBadge}`;
   const formattedDate = createdAt.toLocaleString();
   const isStale = !isActive && (eventState === 'APPROVED' || eventState === 'CHANGES_REQUESTED');
+  const isPrivileged = typeof isPrivilegedProp === 'boolean' ? isPrivilegedProp : false;
+  const muted = (eventState === 'APPROVED' || eventState === 'CHANGES_REQUESTED') && !isPrivileged;
   let tooltip = `${authorWithCount} ${eventState.toLowerCase()} at ${formattedDate}`;
 
   if (eventState === 'APPROVED') {
     if (isStale) tooltip += ' (stale)';
-    const cls = `event-group approved${isStale ? ' stale' : ''}`;
+    if (muted) tooltip += ' (no write access)';
+    const cls = `event-group approved${isStale ? ' stale' : ''}${muted ? ' muted' : ''}`;
     return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.check}</span>`;
   }
   if (eventState === 'CHANGES_REQUESTED') {
     tooltip = `${authorWithCount} requested changes at ${formattedDate}${isStale ? ' (stale)' : ''}`;
-    const cls = `event-group changes-requested${isStale ? ' stale' : ''}`;
+    if (muted) tooltip += ' (no write access)';
+    const cls = `event-group changes-requested${isStale ? ' stale' : ''}${muted ? ' muted' : ''}`;
     return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.times}</span>`;
   }
   if (eventState === 'COMMENTED') {
@@ -1144,7 +1167,10 @@ const getPRPresentation = (pr, {
     const sonarClass = failing ? 'sonar failure' : 'sonar';
     activityParts.push(`<span class="${sonarClass}" title="${tooltip}">${ICONS.sonarQube}</span>`);
   }
-  activityParts.push(...regularEvents.map((event, eventIndex) => TimelineEvent({ ...event, key: eventIndex })));
+  activityParts.push(...regularEvents.map((event, eventIndex) => {
+    const privileged = isPrivilegedApprover(repository.name, event.author);
+    return TimelineEvent({ ...event, isPrivileged: privileged, key: eventIndex });
+  }));
   const activity = activityParts.length > 0
     ? ' ' + activityParts.join('')
     : '';
@@ -1162,7 +1188,10 @@ const getPRPresentation = (pr, {
   return {
     signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${events.length}|${events.map(e => {
       const flag = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED') ? (e.isActive ? '1' : '0') : '';
-      return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}`;
+      const priv = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED')
+        ? (isPrivilegedApprover(repository.name, e.author) ? 'P' : 'p')
+        : '';
+      return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}${priv ? ':' + priv : ''}`;
     }).join(',')}|act:${activityOnSeparateLine ? 'b' : 'i'}`,
     ageMarkup,
     ageClass,
