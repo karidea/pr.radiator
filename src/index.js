@@ -2194,7 +2194,14 @@ const init = async () => {
       },
       R: () => {
         setState({ shortlogData: null });
-        localStorage.removeItem(STORAGE_KEYS.teamMembersCache);
+        const membersCache = loadPersistedMemberCache();
+        state.config.teams.forEach((slug) => {
+          const entry = membersCache.get(slug);
+          if (entry) {
+            membersCache.set(slug, { ...entry, fetchedAt: 0 });
+          }
+        });
+        persistMemberCache(membersCache);
         refreshAllTeamRepos()
           .then((config) => {
             if (state.showShortlog) {
