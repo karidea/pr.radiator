@@ -429,6 +429,18 @@ const getInternalLoginsFromCache = (cache, teams) => {
   return { logins, allLoaded };
 };
 
+const ensureTeamMembersLoaded = () => {
+  const { token, owner, teams } = state.config;
+  if (!token || !owner || teams.length === 0) return;
+  const membersCache = loadPersistedMemberCache();
+  const { allLoaded } = getInternalLoginsFromCache(membersCache, teams);
+  if (!allLoaded) {
+    refreshTeamMembersCache(token, owner, teams, membersCache).then(() => {
+      render();
+    }).catch(() => {});
+  }
+};
+
 const refreshTeamMembersCache = async (token, owner, teams, existingCache = new Map()) => {
   const now = Date.now();
   const staleTeams = teams.filter((slug) => {
@@ -666,6 +678,7 @@ const parseDatesInPR = (pr) => {
 };
 
 const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
+  ensureTeamMembersLoaded();
   const { merge = false } = options;
   const refreshStartedAt = performance.now();
   try {
@@ -737,6 +750,7 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
 const knownDraftTimestamps = new Map();
 
 const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
+  ensureTeamMembersLoaded();
   const { merge = false } = options;
   const refreshStartedAt = performance.now();
   try {
@@ -1440,6 +1454,8 @@ const renderRepoRefreshStatus = () => {
     repoRefreshStatus.classList.remove('hidden');
     repoRefreshStatus.classList.add('active');
   } else {
+    repoRefreshStatus.textContent = '';
+    repoRefreshStatus.classList.remove('active');
     repoRefreshStatus.classList.add('hidden');
   }
 };

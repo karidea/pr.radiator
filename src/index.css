@@ -355,6 +355,10 @@ a {
   white-space: nowrap;
 }
 
+.repo-refresh-status.hidden {
+  display: none;
+}
+
 .repo-refresh-status.active {
   color: #b7aa72;
 }
