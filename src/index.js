@@ -382,6 +382,12 @@ const isSonarQubeLogin = (author) => {
   return login.includes('sonarqube');
 };
 
+const isCopilotLogin = (author) => {
+  if (!author) return false;
+  const login = (typeof author === 'string' ? author : (author.login || '')).toLowerCase();
+  return login.includes('copilot');
+};
+
 const isSonarQubeFailing = (pr) => {
   const commit = pr.commits?.nodes?.[0]?.commit;
   const contexts = commit?.statusCheckRollup?.contexts?.nodes ?? [];
@@ -1115,6 +1121,7 @@ const ICONS = {
   check: `<svg stroke="currentColor" fill="currentColor" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M173.898 439.404l-166.4-166.4c-9.997-9.997-9.997-26.206 0-36.204l36.203-36.204c9.997-9.998 26.207-9.998 36.204 0L192 312.69 432.095 72.596c9.997-9.997 26.207-9.997 36.204 0l36.203 36.204c9.997 9.997 9.997 26.206 0 36.204l-294.4 294.401c-9.998 9.997-26.207 9.997-36.204-.001z" /></svg>`,
   warning: `<svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" class="event-icon"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" /></svg>`,
   sonarQube: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="1em" height="1em" class="event-icon"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2a10 10 0 0 1 10 10"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M2 12a10 10 0 0 1 10 10"/></svg>`,
+  copilot: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="1.15em" height="1.15em" class="event-icon" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="13" rx="2"/><path d="M12 2v4"/><circle cx="8.5" cy="12.5" r="1.5"/><circle cx="15.5" cy="12.5" r="1.5"/><path d="M8 16h8"/></svg>`,
 };
 
 const getEffectivePermission = (repoName, login) => {
@@ -1371,7 +1378,15 @@ const getPRPresentation = (pr, {
     activityParts.push(`<span class="${sonarClass}" title="${tooltip}">${ICONS.sonarQube}</span>`);
   }
   activityParts.push(...regularEvents.map((event, eventIndex) => {
-    return TimelineEvent({ ...event, key: eventIndex });
+    if (isCopilotLogin(event.author)) {
+      const countBadge = (event.count ?? 1) > 1 ? `(${event.count})` : '';
+      const authorWithCount = `${event.author}${countBadge}`;
+      const formattedDate = event.createdAt.toLocaleString();
+      const tooltip = `${authorWithCount} commented at ${formattedDate}`;
+      return `<span class="copilot" title="${tooltip}">${ICONS.copilot}</span>`;
+    } else {
+      return TimelineEvent({ ...event, key: eventIndex });
+    }
   }));
   const activity = activityParts.length > 0
     ? ' ' + activityParts.join('')

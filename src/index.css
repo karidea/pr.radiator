@@ -520,9 +520,13 @@ a {
   border-radius: 0 0 4px 4px;
 }
 
-.sonar {
-  font-size: 0.8em;
+.sonar,
+.copilot {
+  display: inline-flex;
+  align-items: center;
+  font-size: 1em;
   vertical-align: middle;
+  line-height: 1;
   margin-right: 6px;
 }
 
@@ -534,6 +538,18 @@ a {
   color: red;
   transform: scale(1.08);
   transform-origin: center;
+}
+
+.copilot .event-icon {
+  color: #8B5CF6; /* GitHub Copilot purple */
+}
+
+/* Optical vertical centering tweak for the pure-icon badges in the activity line.
+   The flex container + vertical-align gets us most of the way; a tiny negative margin
+   corrects for the icon sitting slightly low relative to the 12px monospace text + other symbols. */
+.sonar .event-icon,
+.copilot .event-icon {
+  margin-top: -0.75px;
 }
 
 .team-badges {
