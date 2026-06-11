@@ -1281,7 +1281,39 @@ const getCommitState = (headRefOid, commits) => {
   const icon = icons[conclusion] || ICONS.minus;
   const className = conclusion.toLowerCase();
 
-  return `<span class="${className}">${icon}</span>`;
+  const commit = commits?.nodes?.find((currentNode) => currentNode.commit.oid === headRefOid)?.commit;
+  const contexts = commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  let title = '';
+  if (conclusion === 'PENDING' || conclusion === 'EXPECTED') {
+    const pending = contexts
+      .filter((ctx) => {
+        if (ctx.__typename === 'CheckRun') {
+          return ctx.status !== 'COMPLETED' || ctx.conclusion === 'NEUTRAL' || !ctx.conclusion;
+        }
+        return ctx.state === 'PENDING' || ctx.state === 'EXPECTED';
+      })
+      .map((ctx) => ctx.name || ctx.context)
+      .filter(Boolean);
+    if (pending.length) {
+      title = 'Pending checks:\n' + pending.join('\n');
+    }
+  } else if (conclusion === 'FAILURE' || conclusion === 'ERROR') {
+    const failed = contexts
+      .filter((ctx) => {
+        if (ctx.__typename === 'CheckRun') {
+          return ctx.conclusion === 'FAILURE';
+        }
+        return ctx.state === 'FAILURE' || ctx.state === 'ERROR';
+      })
+      .map((ctx) => ctx.name || ctx.context)
+      .filter(Boolean);
+    if (failed.length) {
+      title = 'Failed checks:\n' + failed.join('\n');
+    }
+  }
+
+  const titleAttr = title ? ` title="${title.replace(/"/g, '&quot;').replace(/\n/g, '&#10;')}"` : '';
+  return `<span class="${className}"${titleAttr}>${icon}</span>`;
 };
 
 const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true, isPrivileged: isPrivilegedProp, approvalDoesNotCount = false, permissionKnown = true }) => {
