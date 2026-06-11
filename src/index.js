@@ -10,6 +10,7 @@ const STORAGE_KEYS = {
   extraRepos: 'PR_RADIATOR_EXTRA_REPOS',
   graphqlCostDebug: 'PR_RADIATOR_GRAPHQL_COST_DEBUG',
   teamMembersCache: 'PR_RADIATOR_TEAM_MEMBERS_CACHE',
+  collaboratorPermissionCache: 'PR_RADIATOR_COLLAB_PERM_CACHE',
   shortlogSinceDate: 'PR_RADIATOR_SHORTLOG_SINCE_DATE',
   recentPRsSinceDate: 'PR_RADIATOR_RECENT_PRS_SINCE_DATE',
   activityOnSeparateLine: 'PR_RADIATOR_ACTIVITY_SEPARATE_LINE',
@@ -21,6 +22,8 @@ const RATE_LIMIT_COOLDOWN_THRESHOLD = 100;
 const RATE_LIMIT_RESET_BUFFER_MS = 1000;
 const STORAGE_WRITE_FRAME_DELAY = 16;
 const TEAM_MEMBERS_CACHE_TTL_MS = 60 * 60 * 1000;
+const COLLABORATOR_PERMISSION_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const COLLABORATOR_PERMISSION_LOOKUPS_PER_QUERY = 30;
 const EXTERNAL_MERGES_SEARCH_BATCH_SIZE = 10;
 
 const progressBar = document.getElementById('progress-bar');
@@ -158,7 +161,7 @@ const buildRecentCommitHistoryFragment = (sinceDateTime) => `fragment R on Ref{t
 
 const innerOpenPRDiscoveryQuery = 'pullRequests(last:15,states:OPEN){nodes{number updatedAt commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}';
 const commitStatusFields = 'oid statusCheckRollup{state contexts(first:25){nodes{__typename ... on StatusContext{context state} ... on CheckRun{name conclusion status}}}}';
-const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft number author{login} reviews(first:15){nodes{state createdAt author{login}}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
+const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft number author{login} reviews(first:15){nodes{state createdAt author{login} authorAssociation}} latestReviews(first:15){nodes{state author{login} authorAssociation}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
 const graphqlCostFragment = 'rateLimit{cost remaining resetAt}';
 
 const buildDiscoveryQuery = (owner, repos) => {
@@ -189,6 +192,17 @@ const buildHydrationQuery = (owner, repoRequests) => {
 const TeamMembersQuery = (owner, team, after = null) => {
   const afterArg = after ? `, after: "${after}"` : '';
   return `{organization(login:"${owner}"){team(slug:"${team}"){members(first:100${afterArg}){pageInfo{endCursor hasNextPage}nodes{login}}}}}`;
+};
+
+const buildCollaboratorPermissionsQuery = (owner, lookupsByRepo) => {
+  const repoFragments = [...lookupsByRepo.entries()].map(([repoName, logins], rIdx) => {
+    const fields = logins.map((login, lIdx) => {
+      const safeLogin = String(login).replace(/[^A-Za-z0-9_\-]/g, '');
+      return `${getShortGraphQLAlias(lIdx)}:collaborators(query:"${safeLogin}",first:5){edges{permission node{login}}}`;
+    }).join(' ');
+    return `${getShortGraphQLAlias(rIdx)}:repository(owner:"${owner}",name:"${repoName}"){${fields}}`;
+  }).join(' ');
+  return `query{${graphqlCostFragment} ${repoFragments}}`;
 };
 
 const shortlogPRFields = 'number title url mergedAt author{__typename login} baseRefName repository{name}';
@@ -355,20 +369,6 @@ const prCacheKey = (repoName, number) => `${repoName}:${number}`;
 
 const BOT_LOGINS = new Set(['dependabot', 'github-actions', 'renovate', 'renovate-bot', 'snyk-bot']);
 
-const isPrivilegedApprover = (repoName, login) => {
-  if (!repoName || !login) return false;
-  const teamSlugs = getRepoTeamSlugs(repoName);
-  if (teamSlugs.length === 0) return false;
-  const cache = loadPersistedMemberCache();
-  const { logins: teamLogins } = getInternalLoginsFromCache(cache, teamSlugs);
-  const lowerLogin = login.toLowerCase();
-  for (const teamLogin of teamLogins) {
-    if (teamLogin.toLowerCase() === lowerLogin) return true;
-  }
-  return false;
-};
-
-
 const isBotLogin = (author) => {
   if (!author) return false;
   if (author.__typename === 'Bot') return true;
@@ -470,6 +470,161 @@ const refreshTeamMembersCache = async (token, owner, teams, existingCache = new 
 
   persistMemberCache(updatedCache);
   return updatedCache;
+};
+
+// Per-(repo, login) effective permission cache. The collaborators GraphQL
+// connection on Repository returns each user's effective permission
+// (ADMIN/MAINTAIN/WRITE/TRIAGE/READ), which is the authoritative signal for
+// whether a reviewer's approval can count toward branch protection.
+let collaboratorPermissionCache = null;
+let pendingPermissionLookups = null;
+
+const loadPersistedPermissionCache = () => {
+  if (collaboratorPermissionCache) return collaboratorPermissionCache;
+  const raw = parseStoredJSON(STORAGE_KEYS.collaboratorPermissionCache, {});
+  const cache = new Map();
+  Object.entries(raw).forEach(([repo, perRepo]) => {
+    if (!perRepo || typeof perRepo !== 'object') return;
+    const inner = new Map();
+    Object.entries(perRepo).forEach(([loginLower, entry]) => {
+      if (entry && typeof entry.permission === 'string') {
+        inner.set(loginLower, { permission: entry.permission, fetchedAt: entry.fetchedAt || 0 });
+      }
+    });
+    cache.set(repo, inner);
+  });
+  collaboratorPermissionCache = cache;
+  return cache;
+};
+
+const persistPermissionCache = () => {
+  if (!collaboratorPermissionCache) return;
+  const obj = {};
+  collaboratorPermissionCache.forEach((inner, repo) => {
+    const flat = {};
+    inner.forEach((entry, loginLower) => {
+      flat[loginLower] = { permission: entry.permission, fetchedAt: entry.fetchedAt };
+    });
+    obj[repo] = flat;
+  });
+  localStorage.setItem(STORAGE_KEYS.collaboratorPermissionCache, JSON.stringify(obj));
+};
+
+const getCachedPermission = (repoName, login) => {
+  if (!repoName || !login) return null;
+  const cache = loadPersistedPermissionCache();
+  const inner = cache.get(repoName);
+  if (!inner) return null;
+  return inner.get(login.toLowerCase()) || null;
+};
+
+const setCachedPermission = (repoName, login, permission, fetchedAt) => {
+  const cache = loadPersistedPermissionCache();
+  let inner = cache.get(repoName);
+  if (!inner) {
+    inner = new Map();
+    cache.set(repoName, inner);
+  }
+  inner.set(login.toLowerCase(), { permission, fetchedAt });
+};
+
+const PRIVILEGED_PERMISSIONS = new Set(['ADMIN', 'MAINTAIN', 'WRITE']);
+const isPrivilegedPermission = (permission) => PRIVILEGED_PERMISSIONS.has(permission);
+
+const isPermissionEntryFresh = (entry, now = Date.now()) =>
+  !!entry && (now - (entry.fetchedAt || 0)) < COLLABORATOR_PERMISSION_CACHE_TTL_MS;
+
+const collectPermissionLookups = (prs) => {
+  const seen = new Set();
+  const lookups = [];
+  const now = Date.now();
+  prs.forEach((pr) => {
+    const repoName = pr?.repository?.name;
+    if (!repoName) return;
+    const reviewers = new Set();
+    pr.latestReviews?.nodes?.forEach((r) => {
+      const login = getActorLogin(r?.author, '');
+      if (login) reviewers.add(login);
+    });
+    pr.reviews?.nodes?.forEach((r) => {
+      const login = getActorLogin(r?.author, '');
+      if (login) reviewers.add(login);
+    });
+    reviewers.forEach((login) => {
+      const dedupeKey = `${repoName}::${login.toLowerCase()}`;
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
+      const cached = getCachedPermission(repoName, login);
+      if (isPermissionEntryFresh(cached, now)) return;
+      lookups.push({ repoName, login });
+    });
+  });
+  return lookups;
+};
+
+const fetchCollaboratorPermissions = async (token, owner, lookups) => {
+  if (lookups.length === 0) return;
+  const now = Date.now();
+  const chunks = chunkArray(lookups, COLLABORATOR_PERMISSION_LOOKUPS_PER_QUERY);
+
+  await Promise.all(chunks.map(async (chunk) => {
+    const lookupsByRepo = new Map();
+    chunk.forEach(({ repoName, login }) => {
+      const list = lookupsByRepo.get(repoName) || [];
+      list.push(login);
+      lookupsByRepo.set(repoName, list);
+    });
+
+    const query = buildCollaboratorPermissionsQuery(owner, lookupsByRepo);
+
+    let payload;
+    try {
+      payload = await api.fetchGraphQL(token, query, { type: 'collab-permissions' });
+    } catch (error) {
+      console.error('Failed to fetch collaborator permissions:', error);
+      return;
+    }
+
+    const data = payload?.data || {};
+    const repoEntries = [...lookupsByRepo.entries()];
+    repoEntries.forEach(([repoName, logins], rIdx) => {
+      const repoData = data[getShortGraphQLAlias(rIdx)];
+      logins.forEach((login, lIdx) => {
+        const lookupKey = getShortGraphQLAlias(lIdx);
+        const edges = repoData?.[lookupKey]?.edges || [];
+        const lowerLogin = login.toLowerCase();
+        const matched = edges.find((edge) => (edge?.node?.login || '').toLowerCase() === lowerLogin);
+        const permission = matched?.permission || 'NONE';
+        setCachedPermission(repoName, login, permission, now);
+      });
+    });
+  }));
+
+  persistPermissionCache();
+};
+
+const ensureCollaboratorPermissionsLoaded = (prs) => {
+  const { token, owner } = state.config;
+  if (!token || !owner) return;
+  const lookups = collectPermissionLookups(prs);
+  if (lookups.length === 0) return;
+
+  const pendingKey = lookups
+    .map(({ repoName, login }) => `${repoName}::${login.toLowerCase()}`)
+    .sort()
+    .join('|');
+  if (pendingPermissionLookups === pendingKey) return;
+  pendingPermissionLookups = pendingKey;
+
+  fetchCollaboratorPermissions(token, owner, lookups)
+    .then(() => {
+      pendingPermissionLookups = null;
+      render();
+    })
+    .catch((error) => {
+      pendingPermissionLookups = null;
+      console.error('Permission lookup batch failed:', error);
+    });
 };
 
 const fetchShortlogData = async (token, owner, repos, ignoreRepos, sinceDate) => {
@@ -844,11 +999,11 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
     const transformCompletedAt = performance.now();
 
     const renderStartedAt = performance.now();
-    setState({
-      PRs: merge
-        ? mergePullRequestCache(state.PRs, openPRs, filteredRepos, sortByCreatedAt)
-        : openPRs,
-    });
+    const finalPRs = merge
+      ? mergePullRequestCache(state.PRs, openPRs, filteredRepos, sortByCreatedAt)
+      : openPRs;
+    setState({ PRs: finalPRs });
+    ensureCollaboratorPermissionsLoaded(finalPRs);
     const renderCompletedAt = performance.now();
 
     if (shouldLogGraphQLCost()) {
@@ -962,7 +1117,13 @@ const ICONS = {
   sonarQube: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="1em" height="1em" class="event-icon"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2a10 10 0 0 1 10 10"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M2 12a10 10 0 0 1 10 10"/></svg>`,
 };
 
-const combineReviewsAndComments = (reviews, comments) => {
+const getEffectivePermission = (repoName, login) => {
+  const cached = getCachedPermission(repoName, login);
+  if (cached) return cached.permission;
+  return null;
+};
+
+const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecision, repoName) => {
   const events = [];
 
   reviews?.nodes?.forEach((review) => {
@@ -971,6 +1132,7 @@ const combineReviewsAndComments = (reviews, comments) => {
       createdAt: review.createdAt,
       author: getActorLogin(review.author),
       state: currentState,
+      authorAssociation: review.authorAssociation,
     });
   });
 
@@ -995,19 +1157,46 @@ const combineReviewsAndComments = (reviews, comments) => {
   });
   if (currentEvent) compressedEvents.push(currentEvent);
 
-  // Mark the most recent decision state per author as active.
-  // Earlier APPROVED/CHANGES_REQUESTED from the same author are stale (history only).
-  const latestDecisionIndexByAuthor = new Map();
-  compressedEvents.forEach((ev, idx) => {
-    if (ev.state === 'APPROVED' || ev.state === 'CHANGES_REQUESTED' || ev.state === 'DISMISSED') {
-      latestDecisionIndexByAuthor.set(ev.author, idx);
-    }
+  // Build authoritative per-reviewer state from GitHub's `latestReviews`,
+  // which already collapses superseded/auto-dismissed reviews per author.
+  const latestByAuthor = new Map();
+  latestReviews?.nodes?.forEach((review) => {
+    const login = getActorLogin(review.author);
+    if (!login) return;
+    latestByAuthor.set(login, {
+      state: review.state,
+      authorAssociation: review.authorAssociation,
+    });
   });
-  compressedEvents.forEach((ev, idx) => {
+
+  // Privilege is determined by the reviewer's effective permission on the
+  // repo (ADMIN/MAINTAIN/WRITE), looked up via the cached collaborators
+  // query. While the cache is populating, fall back to authorAssociation
+  // OWNER/COLLABORATOR (conservative — MEMBER is org-wide, not repo-wide).
+  const isPrivilegedFor = (login, association) => {
+    const permission = getEffectivePermission(repoName, login);
+    if (permission) return isPrivilegedPermission(permission);
+    return association === 'OWNER' || association === 'COLLABORATOR';
+  };
+
+  // An APPROVED/CHANGES_REQUESTED event is "active" iff it matches the
+  // reviewer's current latestReviews entry. `approvalDoesNotCount` flags
+  // privileged approvals that GitHub still considers insufficient (e.g.
+  // reviewer also pushed, CODEOWNERS unmet) via reviewDecision.
+  compressedEvents.forEach((ev) => {
     if (ev.state === 'APPROVED' || ev.state === 'CHANGES_REQUESTED') {
-      ev.isActive = latestDecisionIndexByAuthor.get(ev.author) === idx;
+      const latest = latestByAuthor.get(ev.author);
+      ev.isActive = !!latest && latest.state === ev.state;
+      const association = latest?.authorAssociation || ev.authorAssociation;
+      ev.isPrivileged = isPrivilegedFor(ev.author, association);
+      ev.approvalDoesNotCount = ev.state === 'APPROVED'
+        && ev.isActive
+        && ev.isPrivileged
+        && reviewDecision === 'REVIEW_REQUIRED';
     } else {
       ev.isActive = true;
+      ev.isPrivileged = false;
+      ev.approvalDoesNotCount = false;
     }
   });
 
@@ -1039,18 +1228,18 @@ const getCommitState = (headRefOid, commits) => {
   return `<span class="${className}">${icon}</span>`;
 };
 
-const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true, isPrivileged: isPrivilegedProp }) => {
+const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true, isPrivileged: isPrivilegedProp, approvalDoesNotCount = false }) => {
   const countBadge = (count ?? 1) > 1 ? `(${count})` : '';
   const authorWithCount = `${author}${countBadge}`;
   const formattedDate = createdAt.toLocaleString();
   const isStale = !isActive && (eventState === 'APPROVED' || eventState === 'CHANGES_REQUESTED');
   const isPrivileged = typeof isPrivilegedProp === 'boolean' ? isPrivilegedProp : false;
-  const muted = (eventState === 'APPROVED' || eventState === 'CHANGES_REQUESTED') && !isPrivileged;
+  const muted = (eventState === 'APPROVED' || eventState === 'CHANGES_REQUESTED') && (!isPrivileged || approvalDoesNotCount);
   let tooltip = `${authorWithCount} ${eventState.toLowerCase()} at ${formattedDate}`;
 
   if (eventState === 'APPROVED') {
     if (isStale) tooltip += ' (stale)';
-    if (muted) tooltip += ' (no write access)';
+    if (muted) tooltip += isPrivileged ? ' (does not count toward review)' : ' (no write access)';
     const cls = `event-group approved${isStale ? ' stale' : ''}${muted ? ' muted' : ''}`;
     return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.check}</span>`;
   }
@@ -1152,13 +1341,13 @@ const getPRPresentation = (pr, {
     };
   }
 
-  const { createdAt, reviews, comments, baseRefName, headRefOid, commits } = pr;
+  const { createdAt, reviews, comments, baseRefName, headRefOid, commits, latestReviews, reviewDecision } = pr;
   const commitState = getCommitState(headRefOid, commits);
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
   const branch = showBranch ? baseRefName : '';
   const ageClass = getAgeString(createdAt);
 
-  const events = combineReviewsAndComments(reviews, comments);
+  const events = combineReviewsAndComments(reviews, comments, latestReviews, reviewDecision, repository.name);
 
   const regularEvents = [];
   let sonarEvent = null;
@@ -1182,8 +1371,7 @@ const getPRPresentation = (pr, {
     activityParts.push(`<span class="${sonarClass}" title="${tooltip}">${ICONS.sonarQube}</span>`);
   }
   activityParts.push(...regularEvents.map((event, eventIndex) => {
-    const privileged = isPrivilegedApprover(repository.name, event.author);
-    return TimelineEvent({ ...event, isPrivileged: privileged, key: eventIndex });
+    return TimelineEvent({ ...event, key: eventIndex });
   }));
   const activity = activityParts.length > 0
     ? ' ' + activityParts.join('')
@@ -1200,12 +1388,13 @@ const getPRPresentation = (pr, {
   const activitySpan = activity ? `<span class="pr-activity">${activity}</span>` : '';
 
   return {
-    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${events.length}|${events.map(e => {
+    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${reviewDecision || ''}|${events.length}|${events.map(e => {
       const flag = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED') ? (e.isActive ? '1' : '0') : '';
       const priv = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED')
-        ? (isPrivilegedApprover(repository.name, e.author) ? 'P' : 'p')
+        ? (e.isPrivileged ? 'P' : 'p')
         : '';
-      return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}${priv ? ':' + priv : ''}`;
+      const dnc = e.approvalDoesNotCount ? 'X' : '';
+      return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}${priv ? ':' + priv : ''}${dnc ? ':' + dnc : ''}`;
     }).join(',')}|act:${activityOnSeparateLine ? 'b' : 'i'}`,
     ageMarkup,
     ageClass,
@@ -2202,6 +2391,9 @@ const init = async () => {
           }
         });
         persistMemberCache(membersCache);
+        localStorage.removeItem(STORAGE_KEYS.collaboratorPermissionCache);
+        collaboratorPermissionCache = null;
+        pendingPermissionLookups = null;
         refreshAllTeamRepos()
           .then((config) => {
             if (state.showShortlog) {
