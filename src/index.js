@@ -478,12 +478,25 @@ const refreshTeamMembersCache = async (token, owner, teams, existingCache = new 
   return updatedCache;
 };
 
-// Per-(repo, login) effective permission cache. The collaborators GraphQL
-// connection on Repository returns each user's effective permission
-// (ADMIN/MAINTAIN/WRITE/TRIAGE/READ), which is the authoritative signal for
-// whether a reviewer's approval can count toward branch protection.
+const fetchViewerLogin = async (token) => {
+  if (currentViewerLogin) return currentViewerLogin;
+  if (!token) return null;
+  try {
+    const payload = await api.fetchGraphQL(token, '{ viewer { login } }', { type: 'viewer' });
+    const login = payload?.data?.viewer?.login || null;
+    if (login) {
+      currentViewerLogin = login;
+    }
+    return currentViewerLogin;
+  } catch (err) {
+    console.error('Failed to fetch viewer login:', err);
+    return null;
+  }
+};
+
 let collaboratorPermissionCache = null;
 let pendingPermissionLookups = null;
+let currentViewerLogin = null;
 
 const loadPersistedPermissionCache = () => {
   if (collaboratorPermissionCache) return collaboratorPermissionCache;
@@ -545,14 +558,19 @@ const collectPermissionLookups = (prs) => {
   const lookups = [];
   const now = Date.now();
   prs.forEach((pr) => {
+    if (shouldHideDependabotPRs() && getActorLogin(pr?.author, '') === 'dependabot') return;
     const repoName = pr?.repository?.name;
     if (!repoName) return;
     const reviewers = new Set();
     pr.latestReviews?.nodes?.forEach((r) => {
+      const state = r?.state;
+      if (state !== 'APPROVED' && state !== 'CHANGES_REQUESTED') return;
       const login = getActorLogin(r?.author, '');
       if (login) reviewers.add(login);
     });
     pr.reviews?.nodes?.forEach((r) => {
+      const state = r?.state;
+      if (state !== 'APPROVED' && state !== 'CHANGES_REQUESTED') return;
       const login = getActorLogin(r?.author, '');
       if (login) reviewers.add(login);
     });
@@ -609,9 +627,10 @@ const fetchCollaboratorPermissions = async (token, owner, lookups) => {
   persistPermissionCache();
 };
 
-const ensureCollaboratorPermissionsLoaded = (prs) => {
+const ensureCollaboratorPermissionsLoaded = async (prs) => {
   const { token, owner } = state.config;
   if (!token || !owner) return;
+
   const lookups = collectPermissionLookups(prs);
   if (lookups.length === 0) return;
 
@@ -620,17 +639,16 @@ const ensureCollaboratorPermissionsLoaded = (prs) => {
     .sort()
     .join('|');
   if (pendingPermissionLookups === pendingKey) return;
+
   pendingPermissionLookups = pendingKey;
 
-  fetchCollaboratorPermissions(token, owner, lookups)
-    .then(() => {
-      pendingPermissionLookups = null;
-      render();
-    })
-    .catch((error) => {
-      pendingPermissionLookups = null;
-      console.error('Permission lookup batch failed:', error);
-    });
+  try {
+    await fetchCollaboratorPermissions(token, owner, lookups);
+  } catch (error) {
+    console.error('Permission lookup batch failed:', error);
+  } finally {
+    pendingPermissionLookups = null;
+  }
 };
 
 const fetchShortlogData = async (token, owner, repos, ignoreRepos, sinceDate) => {
@@ -795,13 +813,14 @@ const hydrateOpenPRs = async (token, owner, repoRequests) => {
   results.forEach(({ payload, repoRequests: repoChunk }) => {
     const repoDataMap = payload?.data || {};
     repoChunk.forEach(({ repoName }, index) => {
-      const repoData = repoDataMap[getShortGraphQLAlias(index)];
+      const repoAlias = getShortGraphQLAlias(index);
+      const repoData = repoDataMap[repoAlias];
       if (!repoData) return;
 
-      Object.keys(repoData).forEach((pullRequestKey) => {
-        const pullRequest = repoData[pullRequestKey];
-        if (!pullRequest) return;
-        hydratedPRs.push(decoratePullRequest(pullRequest, repoName));
+      Object.keys(repoData).forEach((key) => {
+        const val = repoData[key];
+        if (!val || typeof val !== 'object' || val.number == null) return;
+        hydratedPRs.push(decoratePullRequest(val, repoName));
       });
     });
   });
@@ -912,6 +931,10 @@ const knownDraftTimestamps = new Map();
 
 const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
   ensureTeamMembersLoaded();
+  if (token) {
+    fetchViewerLogin(token).catch(() => {});
+  }
+
   const { merge = false } = options;
   const refreshStartedAt = performance.now();
   try {
@@ -932,7 +955,11 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
     discoveryBatches.forEach(({ payload, repos: chunkRepos }) => {
       const repoDataMap = payload?.data || {};
       chunkRepos.forEach((repoName, index) => {
-        const nodes = repoDataMap[getShortGraphQLAlias(index)]?.pullRequests?.nodes ?? [];
+        const repoAlias = getShortGraphQLAlias(index);
+        const repoEntry = repoDataMap[repoAlias] || {};
+
+        const nodes = repoEntry.pullRequests?.nodes ?? [];
+
         nodes.forEach((pr) => {
           discoveredPRs.push({
             number: pr.number,
@@ -1008,8 +1035,17 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
     const finalPRs = merge
       ? mergePullRequestCache(state.PRs, openPRs, filteredRepos, sortByCreatedAt)
       : openPRs;
+
     setState({ PRs: finalPRs });
-    ensureCollaboratorPermissionsLoaded(finalPRs);
+
+    ensureCollaboratorPermissionsLoaded(finalPRs)
+      .then(() => {
+        render();
+      })
+      .catch((error) => {
+        console.error('Permission lookup failed:', error);
+      });
+
     const renderCompletedAt = performance.now();
 
     if (shouldLogGraphQLCost()) {
@@ -1031,6 +1067,10 @@ const refreshCurrentView = async (options = {}) => {
   const activeTeamSlug = options.activeTeamSlugOverride ?? state.activeTeamSlug;
   const { token, owner, ignoreRepos } = config;
   const repos = options.reposOverride || getVisibleRepos(config, activeTeamSlug);
+
+  if (token) {
+    fetchViewerLogin(token).catch(() => {});
+  }
 
   if (!token || !owner) return;
   if (shouldPauseGitHubRefresh()) {
@@ -1164,8 +1204,6 @@ const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecis
   });
   if (currentEvent) compressedEvents.push(currentEvent);
 
-  // Build authoritative per-reviewer state from GitHub's `latestReviews`,
-  // which already collapses superseded/auto-dismissed reviews per author.
   const latestByAuthor = new Map();
   latestReviews?.nodes?.forEach((review) => {
     const login = getActorLogin(review.author);
@@ -1176,26 +1214,36 @@ const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecis
     });
   });
 
-  // Privilege is determined by the reviewer's effective permission on the
-  // repo (ADMIN/MAINTAIN/WRITE), looked up via the cached collaborators
-  // query. While the cache is populating, fall back to authorAssociation
-  // OWNER/COLLABORATOR (conservative — MEMBER is org-wide, not repo-wide).
-  const isPrivilegedFor = (login, association) => {
-    const permission = getEffectivePermission(repoName, login);
-    if (permission) return isPrivilegedPermission(permission);
-    return association === 'OWNER' || association === 'COLLABORATOR';
-  };
-
-  // An APPROVED/CHANGES_REQUESTED event is "active" iff it matches the
-  // reviewer's current latestReviews entry. `approvalDoesNotCount` flags
-  // privileged approvals that GitHub still considers insufficient (e.g.
-  // reviewer also pushed, CODEOWNERS unmet) via reviewDecision.
   compressedEvents.forEach((ev) => {
     if (ev.state === 'APPROVED' || ev.state === 'CHANGES_REQUESTED') {
       const latest = latestByAuthor.get(ev.author);
       ev.isActive = !!latest && latest.state === ev.state;
       const association = latest?.authorAssociation || ev.authorAssociation;
-      ev.isPrivileged = isPrivilegedFor(ev.author, association);
+      const permission = getEffectivePermission(repoName, ev.author);
+      if (permission) {
+        ev.isPrivileged = isPrivilegedPermission(permission);
+        ev.permissionKnown = true;
+      } else if (currentViewerLogin && ev.author) {
+        const lower = ev.author.toLowerCase();
+        if (lower === currentViewerLogin.toLowerCase()) {
+          ev.isPrivileged = true;
+          ev.permissionKnown = true;
+        }
+      } else if (ev.author && state.config?.teams?.length) {
+        const membersCache = loadPersistedMemberCache();
+        const { logins: internals } = getInternalLoginsFromCache(membersCache, state.config.teams);
+        if (internals.has(ev.author)) {
+          ev.isPrivileged = true;
+          ev.permissionKnown = true;
+        }
+      }
+
+      if (typeof ev.permissionKnown !== 'boolean') {
+        const fromAssociation = association === 'OWNER' || association === 'COLLABORATOR';
+        ev.isPrivileged = fromAssociation;
+        ev.permissionKnown = fromAssociation;
+      }
+
       ev.approvalDoesNotCount = ev.state === 'APPROVED'
         && ev.isActive
         && ev.isPrivileged
@@ -1204,6 +1252,7 @@ const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecis
       ev.isActive = true;
       ev.isPrivileged = false;
       ev.approvalDoesNotCount = false;
+      ev.permissionKnown = true;
     }
   });
 
@@ -1235,25 +1284,27 @@ const getCommitState = (headRefOid, commits) => {
   return `<span class="${className}">${icon}</span>`;
 };
 
-const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true, isPrivileged: isPrivilegedProp, approvalDoesNotCount = false }) => {
+const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true, isPrivileged: isPrivilegedProp, approvalDoesNotCount = false, permissionKnown = true }) => {
   const countBadge = (count ?? 1) > 1 ? `(${count})` : '';
   const authorWithCount = `${author}${countBadge}`;
   const formattedDate = createdAt.toLocaleString();
   const isStale = !isActive && (eventState === 'APPROVED' || eventState === 'CHANGES_REQUESTED');
   const isPrivileged = typeof isPrivilegedProp === 'boolean' ? isPrivilegedProp : false;
-  const muted = (eventState === 'APPROVED' || eventState === 'CHANGES_REQUESTED') && (!isPrivileged || approvalDoesNotCount);
+  const permissionResolved = typeof permissionKnown === 'boolean' ? permissionKnown : true;
+  const muted = (eventState === 'APPROVED' || eventState === 'CHANGES_REQUESTED') && permissionResolved && (!isPrivileged || approvalDoesNotCount);
+  const pending = (eventState === 'APPROVED' || eventState === 'CHANGES_REQUESTED') && !permissionResolved;
   let tooltip = `${authorWithCount} ${eventState.toLowerCase()} at ${formattedDate}`;
 
   if (eventState === 'APPROVED') {
     if (isStale) tooltip += ' (stale)';
     if (muted) tooltip += isPrivileged ? ' (does not count toward review)' : ' (no write access)';
-    const cls = `event-group approved${isStale ? ' stale' : ''}${muted ? ' muted' : ''}`;
+    const cls = `event-group approved${isStale ? ' stale' : ''}${muted ? ' muted' : ''}${pending ? ' permission-pending' : ''}`;
     return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.check}</span>`;
   }
   if (eventState === 'CHANGES_REQUESTED') {
     tooltip = `${authorWithCount} requested changes at ${formattedDate}${isStale ? ' (stale)' : ''}`;
     if (muted) tooltip += ' (no write access)';
-    const cls = `event-group changes-requested${isStale ? ' stale' : ''}${muted ? ' muted' : ''}`;
+    const cls = `event-group changes-requested${isStale ? ' stale' : ''}${muted ? ' muted' : ''}${pending ? ' permission-pending' : ''}`;
     return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.times}</span>`;
   }
   if (eventState === 'COMMENTED') {
@@ -1327,6 +1378,7 @@ const getPRPresentation = (pr, {
   showInlineTeamBadges = false,
   teamBadgeCache = null,
   activityOnSeparateLine = false,
+  showActivity = true,
 } = {}) => {
   const { number, title, url, repository, teamSlugs = [] } = pr;
   const teamBadges = getTeamBadgesMarkup(teamSlugs, showInlineTeamBadges, teamBadgeCache);
@@ -1354,44 +1406,6 @@ const getPRPresentation = (pr, {
   const branch = showBranch ? baseRefName : '';
   const ageClass = getAgeString(createdAt);
 
-  const events = combineReviewsAndComments(reviews, comments, latestReviews, reviewDecision, repository.name);
-
-  const regularEvents = [];
-  let sonarEvent = null;
-  events.forEach((ev) => {
-    if (isSonarQubeLogin(ev.author)) {
-      sonarEvent = ev;
-    } else {
-      regularEvents.push(ev);
-    }
-  });
-
-  const activityParts = [];
-  if (sonarEvent) {
-    const countBadge = (sonarEvent.count ?? 1) > 1 ? `(${sonarEvent.count})` : '';
-    const authorWithCount = `${sonarEvent.author}${countBadge}`;
-    const formattedDate = sonarEvent.createdAt.toLocaleString();
-    let tooltip = `${authorWithCount} commented at ${formattedDate}`;
-    const failing = isSonarQubeFailing(pr);
-    if (failing) tooltip = `${authorWithCount} quality gate failed at ${formattedDate}`;
-    const sonarClass = failing ? 'sonar failure' : 'sonar';
-    activityParts.push(`<span class="${sonarClass}" title="${tooltip}">${ICONS.sonarQube}</span>`);
-  }
-  activityParts.push(...regularEvents.map((event, eventIndex) => {
-    if (isCopilotLogin(event.author)) {
-      const countBadge = (event.count ?? 1) > 1 ? `(${event.count})` : '';
-      const authorWithCount = `${event.author}${countBadge}`;
-      const formattedDate = event.createdAt.toLocaleString();
-      const tooltip = `${authorWithCount} commented at ${formattedDate}`;
-      return `<span class="copilot" title="${tooltip}">${ICONS.copilot}</span>`;
-    } else {
-      return TimelineEvent({ ...event, key: eventIndex });
-    }
-  }));
-  const activity = activityParts.length > 0
-    ? ' ' + activityParts.join('')
-    : '';
-
   const mainParts = [];
   if (teamBadges) mainParts.push(teamBadges);
   mainParts.push(commitState);
@@ -1400,17 +1414,64 @@ const getPRPresentation = (pr, {
   mainParts.push(prLink);
   mainParts.push(title);
   const mainCore = mainParts.join(' ');
-  const activitySpan = activity ? `<span class="pr-activity">${activity}</span>` : '';
+
+  let activitySpan = '';
+  let eventsForSignature = [];
+  let eventsLengthForSignature = 0;
+
+  if (showActivity) {
+    const events = combineReviewsAndComments(reviews, comments, latestReviews, reviewDecision, repository.name);
+
+    const regularEvents = [];
+    let sonarEvent = null;
+    events.forEach((ev) => {
+      if (isSonarQubeLogin(ev.author)) {
+        sonarEvent = ev;
+      } else {
+        regularEvents.push(ev);
+      }
+    });
+
+    const activityParts = [];
+    if (sonarEvent) {
+      const countBadge = (sonarEvent.count ?? 1) > 1 ? `(${sonarEvent.count})` : '';
+      const authorWithCount = `${sonarEvent.author}${countBadge}`;
+      const formattedDate = sonarEvent.createdAt.toLocaleString();
+      let tooltip = `${authorWithCount} commented at ${formattedDate}`;
+      const failing = isSonarQubeFailing(pr);
+      if (failing) tooltip = `${authorWithCount} quality gate failed at ${formattedDate}`;
+      const sonarClass = failing ? 'sonar failure' : 'sonar';
+      activityParts.push(`<span class="${sonarClass}" title="${tooltip}">${ICONS.sonarQube}</span>`);
+    }
+    activityParts.push(...regularEvents.map((event, eventIndex) => {
+      if (isCopilotLogin(event.author)) {
+        const countBadge = (event.count ?? 1) > 1 ? `(${event.count})` : '';
+        const authorWithCount = `${event.author}${countBadge}`;
+        const formattedDate = event.createdAt.toLocaleString();
+        const tooltip = `${authorWithCount} commented at ${formattedDate}`;
+        return `<span class="copilot" title="${tooltip}">${ICONS.copilot}</span>`;
+      } else {
+        return TimelineEvent({ ...event, key: eventIndex });
+      }
+    }));
+    const activity = activityParts.length > 0
+      ? ' ' + activityParts.join('')
+      : '';
+    activitySpan = activity ? `<span class="pr-activity">${activity}</span>` : '';
+
+    eventsForSignature = events;
+    eventsLengthForSignature = events.length;
+  }
 
   return {
-    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${reviewDecision || ''}|${events.length}|${events.map(e => {
+    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${reviewDecision || ''}|${eventsLengthForSignature}|${eventsForSignature.map(e => {
       const flag = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED') ? (e.isActive ? '1' : '0') : '';
       const priv = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED')
-        ? (e.isPrivileged ? 'P' : 'p')
+        ? (e.isPrivileged ? 'P' : 'p') + (e.permissionKnown ? 'K' : 'k')
         : '';
       const dnc = e.approvalDoesNotCount ? 'X' : '';
       return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}${priv ? ':' + priv : ''}${dnc ? ':' + dnc : ''}`;
-    }).join(',')}|act:${activityOnSeparateLine ? 'b' : 'i'}`,
+    }).join(',')}|act:${activityOnSeparateLine ? 'b' : 'i'}|tail:${showActivity ? '1' : '0'}`,
     ageMarkup,
     ageClass,
     mainCore,
@@ -1465,6 +1526,7 @@ const syncPRList = (listEl, displayPRs, {
   teamBadgeCache = null,
   selectedPrIndex = -1,
   activityOnSeparateLine = false,
+  showActivity = true,
 } = {}) => {
   const existingNodesByUrl = new Map(
     Array.from(listEl.children).map((child) => [child.dataset.url, child])
@@ -1479,6 +1541,7 @@ const syncPRList = (listEl, displayPRs, {
       showInlineTeamBadges,
       teamBadgeCache,
       activityOnSeparateLine,
+      showActivity,
     });
     let node = existingNodesByUrl.get(pr.url);
 
@@ -2099,6 +2162,7 @@ const render = () => {
     teamBadgeCache,
     selectedPrIndex,
     activityOnSeparateLine: state.activityOnSeparateLine,
+    showActivity: true,
   });
   document.title = `(${count}) PR Radiator`;
 

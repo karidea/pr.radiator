@@ -43,11 +43,11 @@ span.issue-commented {
 }
 
 span.success, span.approved {
-  color: #22863a;
+  color: #2da44e;
 }
 
 span.failure, span.changes-requested {
-  color: red;
+  color: #d73a49;
 }
 
 a {
@@ -245,13 +245,12 @@ a {
 }
 
 .approved .event-icon {
-  color: #22863a;
-  filter: brightness(1.2);
+  color: #2da44e;
 }
 
 .failure .event-icon,
 .changes-requested .event-icon {
-  color: red;
+  color: #d73a49;
   transform: scale(1.08);
   transform-origin: center;
 }
@@ -267,49 +266,36 @@ a {
   text-decoration: line-through;
 }
 
-/* Stale (superseded) review states — same hue as active, but dimmed so only the
-   author's latest decision stands out. Opacity keeps the color identity while
-   reducing visual weight. */
 .event-group.stale {
   opacity: 0.68;
 }
 
 .event-group.approved.stale {
-  color: #22863a;
+  color: #2da44e;
 }
 .event-group.changes-requested.stale {
-  color: red;
+  color: #d73a49;
 }
 
 .event-group.approved.stale .event-icon {
-  color: #22863a;
-  filter: none;
+  color: #2da44e;
+  transform: none;
 }
 .event-group.changes-requested.stale .event-icon {
-  color: red;
+  color: #d73a49;
   transform: none;
 }
 
 .event-group.approved.muted,
 .event-group.changes-requested.muted {
-  opacity: 0.65;
-}
-
-.event-group.approved.muted {
-  color: #7aa87a;
-  font-weight: 400;
-}
-.event-group.changes-requested.muted {
-  color: #c17a7a;
+  opacity: 0.8;
   font-weight: 400;
 }
 
 .event-group.approved.muted .event-icon {
-  color: #7aa87a;
-  filter: none;
+  transform: none;
 }
 .event-group.changes-requested.muted .event-icon {
-  color: #c17a7a;
   transform: none;
 }
 
@@ -318,10 +304,36 @@ a {
   font-weight: 600;
 }
 
+.event-group.approved:not(.muted) .event-icon {
+  transform: scale(1.08);
+  transform-origin: center;
+}
+
+.event-group.approved.permission-pending,
+.event-group.changes-requested.permission-pending {
+  color: #6b7280;
+  font-weight: 400;
+  opacity: 0.82;
+}
+
+.event-group.approved.permission-pending .event-icon,
+.event-group.changes-requested.permission-pending .event-icon {
+  color: #6b7280;
+  filter: none;
+  transform: none;
+}
+
 .event-group {
   display: inline-flex;
   align-items: center;
   margin-right: 6px;
+  transition: color 220ms ease, opacity 220ms ease;
+}
+
+.event-group .event-icon {
+  margin-left: 2px;
+  margin-right: 0;
+  transition: color 220ms ease, filter 220ms ease, transform 160ms ease;
 }
 
 .event-group .event-icon {
@@ -531,7 +543,7 @@ a {
 }
 
 .sonar .event-icon {
-  color: #00A3E0; /* SonarQube blue (associated with Server) */
+  color: #00A3E0;
 }
 
 .sonar.failure .event-icon {
@@ -541,12 +553,9 @@ a {
 }
 
 .copilot .event-icon {
-  color: #8B5CF6; /* GitHub Copilot purple */
+  color: #8B5CF6;
 }
 
-/* Optical vertical centering tweak for the pure-icon badges in the activity line.
-   The flex container + vertical-align gets us most of the way; a tiny negative margin
-   corrects for the icon sitting slightly low relative to the 12px monospace text + other symbols. */
 .sonar .event-icon,
 .copilot .event-icon {
   margin-top: -0.75px;
