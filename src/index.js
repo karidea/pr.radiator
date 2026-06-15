@@ -160,7 +160,7 @@ const innerRecentPRsQuery = 'mainRef:ref(qualifiedName:"refs/heads/main"){...R} 
 const buildRecentCommitHistoryFragment = (sinceDateTime) => `fragment R on Ref{target{... on Commit{history(first:25,since:"${sinceDateTime}"){nodes{committedDate messageHeadline parents{totalCount} associatedPullRequests(first:5){nodes{createdAt number title url author{login} repository{name}}}}}}}}`;
 
 const innerOpenPRDiscoveryQuery = 'pullRequests(last:15,states:OPEN){nodes{number updatedAt commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}';
-const commitStatusFields = 'oid statusCheckRollup{state contexts(first:25){nodes{__typename ... on StatusContext{context state} ... on CheckRun{name conclusion status}}}}';
+const commitStatusFields = 'oid statusCheckRollup{state contexts(first:25){nodes{__typename ... on StatusContext{context state targetUrl} ... on CheckRun{name conclusion status detailsUrl}}}}';
 const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft number author{login} reviews(first:15){nodes{state createdAt author{login} authorAssociation}} latestReviews(first:15){nodes{state author{login} authorAssociation}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
 const graphqlCostFragment = 'rateLimit{cost remaining resetAt}';
 
@@ -398,6 +398,20 @@ const isSonarQubeFailing = (pr) => {
     const state = (ctx.conclusion || ctx.state || '').toUpperCase();
     return state === 'FAILURE' || state === 'FAILED' || state === 'ERROR';
   });
+};
+
+const getSonarQubeUrl = (pr) => {
+  const commit = pr.commits?.nodes?.[0]?.commit;
+  const contexts = commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  for (const ctx of contexts) {
+    if (!ctx) continue;
+    const name = (ctx.name || ctx.context || '').toLowerCase();
+    const url = (ctx.__typename === 'CheckRun' ? ctx.detailsUrl : ctx.targetUrl) || '';
+    if (name.includes('sonar') || /sonar(qube|cloud)?/i.test(url)) {
+      if (url) return url;
+    }
+  }
+  return '';
 };
 
 const loadPersistedMemberCache = () => {
@@ -1268,7 +1282,47 @@ const getAgeString = (createdAt) => {
   return 'over-week-old';
 };
 
-const getCommitState = (headRefOid, commits) => {
+const getContextUrl = (ctx) => (ctx?.__typename === 'CheckRun' ? ctx.detailsUrl : ctx?.targetUrl) || '';
+
+const isSonarContext = (ctx) => {
+  const url = getContextUrl(ctx);
+  if (url && /sonar(qube|cloud)?/i.test(url)) return true;
+  const name = (ctx?.context || ctx?.name || '').toLowerCase();
+  return name.includes('sonar');
+};
+
+const pickBuildUrl = (rawContexts, conclusion, prUrl) => {
+  const contexts = (rawContexts || []).filter((ctx) => !isSonarContext(ctx));
+  if (!contexts.length) return prUrl ? `${prUrl}/checks` : '';
+
+  const isAdo = (ctx) => {
+    const url = getContextUrl(ctx);
+    return url && /dev\.azure\.com|visualstudio\.com/i.test(url);
+  };
+  const isFailed = (ctx) =>
+    ctx.__typename === 'CheckRun'
+      ? ctx.conclusion === 'FAILURE'
+      : ctx.state === 'FAILURE' || ctx.state === 'ERROR';
+  const isPending = (ctx) =>
+    ctx.__typename === 'CheckRun'
+      ? ctx.status !== 'COMPLETED' || !ctx.conclusion || ctx.conclusion === 'NEUTRAL'
+      : ctx.state === 'PENDING' || ctx.state === 'EXPECTED';
+
+  const adoContexts = contexts.filter(isAdo);
+
+  let chosen;
+  if (conclusion === 'FAILURE' || conclusion === 'ERROR') {
+    chosen = adoContexts.find(isFailed) || contexts.find(isFailed) || adoContexts[0];
+  } else if (conclusion === 'PENDING' || conclusion === 'EXPECTED') {
+    chosen = adoContexts.find(isPending) || contexts.find(isPending) || adoContexts[0];
+  } else {
+    chosen = adoContexts[0] || contexts[0];
+  }
+
+  return getContextUrl(chosen) || (prUrl ? `${prUrl}/checks` : '');
+};
+
+const getCommitState = (headRefOid, commits, prUrl) => {
   const icons = {
     SUCCESS: ICONS.check,
     PENDING: ICONS.hourglass,
@@ -1313,7 +1367,10 @@ const getCommitState = (headRefOid, commits) => {
   }
 
   const titleAttr = title ? ` title="${title.replace(/"/g, '&quot;').replace(/\n/g, '&#10;')}"` : '';
-  return `<span class="${className}"${titleAttr}>${icon}</span>`;
+  const iconSpan = `<span class="${className}"${titleAttr}>${icon}</span>`;
+  const buildUrl = pickBuildUrl(contexts, conclusion, prUrl);
+  if (!buildUrl) return iconSpan;
+  return `<a class="commit-status-link" href="${buildUrl}" target="_blank" rel="noopener noreferrer">${iconSpan}</a>`;
 };
 
 const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true, isPrivileged: isPrivilegedProp, approvalDoesNotCount = false, permissionKnown = true }) => {
@@ -1433,7 +1490,7 @@ const getPRPresentation = (pr, {
   }
 
   const { createdAt, reviews, comments, baseRefName, headRefOid, commits, latestReviews, reviewDecision } = pr;
-  const commitState = getCommitState(headRefOid, commits);
+  const commitState = getCommitState(headRefOid, commits, url);
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
   const branch = showBranch ? baseRefName : '';
   const ageClass = getAgeString(createdAt);
@@ -1473,7 +1530,9 @@ const getPRPresentation = (pr, {
       const failing = isSonarQubeFailing(pr);
       if (failing) tooltip = `${authorWithCount} quality gate failed at ${formattedDate}`;
       const sonarClass = failing ? 'sonar failure' : 'sonar';
-      activityParts.push(`<span class="${sonarClass}" title="${tooltip}">${ICONS.sonarQube}</span>`);
+      const sonarUrl = getSonarQubeUrl(pr);
+      const sonarSpan = `<span class="${sonarClass}" title="${tooltip}">${ICONS.sonarQube}</span>`;
+      activityParts.push(sonarUrl ? `<a class="commit-status-link" href="${sonarUrl}" target="_blank" rel="noopener">${sonarSpan}</a>` : sonarSpan);
     }
     activityParts.push(...regularEvents.map((event, eventIndex) => {
       if (isCopilotLogin(event.author)) {

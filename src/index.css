@@ -748,3 +748,12 @@ a {
 .shortlog-pr-meta {
   color: #6a6a6a;
 }
+
+.commit-status-link {
+  text-decoration: none;
+  color: inherit;
+}
+
+.commit-status-link:hover span {
+  filter: brightness(1.25);
+}
