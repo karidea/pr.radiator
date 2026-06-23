@@ -531,7 +531,8 @@ a {
 }
 
 .sonar,
-.copilot {
+.copilot,
+.github {
   display: inline-flex;
   align-items: center;
   font-size: 1em;
@@ -554,8 +555,13 @@ a {
   color: #8B5CF6;
 }
 
+.github .event-icon {
+  color: #c9d1d9;
+}
+
 .sonar .event-icon,
-.copilot .event-icon {
+.copilot .event-icon,
+.github .event-icon {
   margin-top: -0.75px;
 }
 
