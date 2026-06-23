@@ -160,7 +160,7 @@ const innerRecentPRsQuery = 'mainRef:ref(qualifiedName:"refs/heads/main"){...R} 
 const buildRecentCommitHistoryFragment = (sinceDateTime) => `fragment R on Ref{target{... on Commit{history(first:25,since:"${sinceDateTime}"){nodes{committedDate messageHeadline parents{totalCount} associatedPullRequests(first:5){nodes{createdAt number title url author{login} repository{name}}}}}}}}`;
 
 const innerOpenPRDiscoveryQuery = 'pullRequests(last:15,states:OPEN){nodes{number updatedAt commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}';
-const commitStatusFields = 'oid statusCheckRollup{state contexts(first:25){nodes{__typename ... on StatusContext{context state targetUrl} ... on CheckRun{name conclusion status detailsUrl}}}}';
+const commitStatusFields = 'oid statusCheckRollup{state contexts(first:25){totalCount nodes{__typename ... on StatusContext{context state targetUrl} ... on CheckRun{name conclusion status detailsUrl}}}}';
 const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft number author{login} reviews(first:15){nodes{state createdAt author{login} authorAssociation}} latestReviews(first:15){nodes{state author{login} authorAssociation}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
 const graphqlCostFragment = 'rateLimit{cost remaining resetAt}';
 
@@ -1291,6 +1291,24 @@ const isSonarContext = (ctx) => {
   return name.includes('sonar');
 };
 
+// When a GHA check is re-run via a new workflow trigger, GitHub keeps both the
+// old failed run and the new run in statusCheckRollup.contexts, causing the
+// rollup state to remain FAILURE even though the latest run passed.
+// This deduplicates CheckRun entries by name, keeping a passing run (SUCCESS/SKIPPED)
+// over a failing one, so the displayed status reflects the actual current state.
+const deduplicateCheckRuns = (contexts) => {
+  const bestByName = new Map();
+  contexts.forEach((ctx) => {
+    if (ctx.__typename !== 'CheckRun' || !ctx.name) return;
+    const existing = bestByName.get(ctx.name);
+    if (!existing) { bestByName.set(ctx.name, ctx); return; }
+    const currentPasses = ctx.conclusion === 'SUCCESS' || ctx.conclusion === 'SKIPPED';
+    const existingPasses = existing.conclusion === 'SUCCESS' || existing.conclusion === 'SKIPPED';
+    if (currentPasses && !existingPasses) bestByName.set(ctx.name, ctx);
+  });
+  return contexts.filter((ctx) => ctx.__typename !== 'CheckRun' || !ctx.name || bestByName.get(ctx.name) === ctx);
+};
+
 const pickBuildUrl = (rawContexts, conclusion, prUrl) => {
   const contexts = (rawContexts || []).filter((ctx) => !isSonarContext(ctx));
   if (!contexts.length) return prUrl ? `${prUrl}/checks` : '';
@@ -1331,12 +1349,36 @@ const getCommitState = (headRefOid, commits, prUrl) => {
     ERROR: ICONS.warning,
   };
 
-  const conclusion = getCommitConclusion(headRefOid, commits) || 'ERROR';
+  const rollupConclusion = getCommitConclusion(headRefOid, commits) || 'ERROR';
+  const commit = commits?.nodes?.find((currentNode) => currentNode.commit.oid === headRefOid)?.commit;
+  const contextData = commit?.statusCheckRollup?.contexts;
+  const rawContexts = contextData?.nodes ?? [];
+  const totalCount = contextData?.totalCount;
+  const contexts = deduplicateCheckRuns(rawContexts);
+
+  // When all contexts are fetched and deduplication removes every failure (old re-run
+  // artifacts), override the rollup conclusion so the icon reflects the real state.
+  let conclusion = rollupConclusion;
+  const hasAllContexts = totalCount != null && rawContexts.length >= totalCount;
+  if ((rollupConclusion === 'FAILURE' || rollupConclusion === 'ERROR') && hasAllContexts) {
+    const stillFailing = contexts.some((ctx) =>
+      ctx.__typename === 'CheckRun'
+        ? ctx.status === 'COMPLETED' && ctx.conclusion === 'FAILURE'
+        : ctx.state === 'FAILURE' || ctx.state === 'ERROR'
+    );
+    if (!stillFailing) {
+      const hasPending = contexts.some((ctx) =>
+        ctx.__typename === 'CheckRun'
+          ? ctx.status !== 'COMPLETED' || !ctx.conclusion
+          : ctx.state === 'PENDING' || ctx.state === 'EXPECTED'
+      );
+      conclusion = hasPending ? 'PENDING' : 'SUCCESS';
+    }
+  }
+
   const icon = icons[conclusion] || ICONS.minus;
   const className = conclusion.toLowerCase();
 
-  const commit = commits?.nodes?.find((currentNode) => currentNode.commit.oid === headRefOid)?.commit;
-  const contexts = commit?.statusCheckRollup?.contexts?.nodes ?? [];
   let title = '';
   if (conclusion === 'PENDING' || conclusion === 'EXPECTED') {
     const pending = contexts
