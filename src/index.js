@@ -159,9 +159,9 @@ const innerRecentPRsQuery = 'mainRef:ref(qualifiedName:"refs/heads/main"){...R} 
 
 const buildRecentCommitHistoryFragment = (sinceDateTime) => `fragment R on Ref{target{... on Commit{history(first:25,since:"${sinceDateTime}"){nodes{committedDate messageHeadline parents{totalCount} associatedPullRequests(first:5){nodes{createdAt number title url author{login} repository{name}}}}}}}}`;
 
-const innerOpenPRDiscoveryQuery = 'pullRequests(last:15,states:OPEN){nodes{number updatedAt commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}';
+const innerOpenPRDiscoveryQuery = 'pullRequests(last:15,states:OPEN){nodes{number updatedAt mergeable commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}';
 const commitStatusFields = 'oid statusCheckRollup{state contexts(first:25){totalCount nodes{__typename ... on StatusContext{context state targetUrl} ... on CheckRun{name conclusion status detailsUrl}}}}';
-const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft number author{login} reviews(first:15){nodes{state createdAt author{login} authorAssociation}} latestReviews(first:15){nodes{state author{login} authorAssociation}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
+const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft mergeable number author{login} reviews(first:15){nodes{state createdAt author{login} authorAssociation}} latestReviews(first:15){nodes{state author{login} authorAssociation}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
 const graphqlCostFragment = 'rateLimit{cost remaining resetAt}';
 
 const buildDiscoveryQuery = (owner, repos) => {
@@ -815,12 +815,14 @@ const getCommitConclusion = (headRefOid, commits) => commits?.nodes
   ?.find((currentNode) => currentNode.commit.oid === headRefOid)
   ?.commit?.statusCheckRollup?.state || null;
 
-const needsHydration = (cachedPR, discoveredUpdatedAt, discoveredCommitConclusion) => {
+const needsHydration = (cachedPR, discoveredUpdatedAt, discoveredCommitConclusion, discoveredMergeable = null) => {
   if (!cachedPR) return true;
   if (!(cachedPR.updatedAt instanceof Date)) return true;
   if (cachedPR.updatedAt.getTime() !== discoveredUpdatedAt?.getTime()) return true;
   const cachedCommitConclusion = getCommitConclusion(cachedPR.headRefOid, cachedPR.commits);
   if (cachedCommitConclusion !== discoveredCommitConclusion) return true;
+  const cachedMergeable = cachedPR.mergeable || null;
+  if (cachedMergeable !== (discoveredMergeable || null)) return true;
   return false;
 };
 
@@ -985,6 +987,7 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
             number: pr.number,
             updatedAt: pr.updatedAt ? new Date(pr.updatedAt) : null,
             commitConclusion: pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state || null,
+            mergeable: pr.mergeable || null,
             repoName,
           });
         });
@@ -1006,7 +1009,7 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
         return;
       }
 
-      if (!needsHydration(cachedPR, pr.updatedAt, pr.commitConclusion)) {
+      if (!needsHydration(cachedPR, pr.updatedAt, pr.commitConclusion, pr.mergeable)) {
         unchangedCount += 1;
         unchangedPRsByKey.set(key, cachedPR);
         return;
@@ -1347,7 +1350,7 @@ const pickBuildUrl = (rawContexts, conclusion, prUrl) => {
   return getContextUrl(chosen) || (prUrl ? `${prUrl}/checks` : '');
 };
 
-const getCommitState = (headRefOid, commits, prUrl) => {
+const getCommitState = (headRefOid, commits, prUrl, mergeable = null) => {
   const icons = {
     SUCCESS: ICONS.check,
     PENDING: ICONS.hourglass,
@@ -1383,11 +1386,48 @@ const getCommitState = (headRefOid, commits, prUrl) => {
     }
   }
 
-  const icon = icons[conclusion] || ICONS.minus;
-  const className = conclusion.toLowerCase();
+  let icon = icons[conclusion] || ICONS.minus;
+  let className = conclusion.toLowerCase();
+  if (mergeable === 'CONFLICTING') {
+    icon = ICONS.warning;
+    className = 'conflict';
+  }
 
   let title = '';
-  if (conclusion === 'PENDING' || conclusion === 'EXPECTED') {
+  if (mergeable === 'CONFLICTING') {
+    title = 'This branch has conflicts that must be resolved';
+    let checkInfo = '';
+    if (conclusion === 'PENDING' || conclusion === 'EXPECTED') {
+      const pending = contexts
+        .filter((ctx) => {
+          if (ctx.__typename === 'CheckRun') {
+            return ctx.status !== 'COMPLETED' || ctx.conclusion === 'NEUTRAL' || !ctx.conclusion;
+          }
+          return ctx.state === 'PENDING' || ctx.state === 'EXPECTED';
+        })
+        .map((ctx) => ctx.name || ctx.context)
+        .filter(Boolean);
+      if (pending.length) {
+        checkInfo = 'Pending checks:\n' + pending.join('\n');
+      }
+    } else if (conclusion === 'FAILURE' || conclusion === 'ERROR') {
+      const failed = contexts
+        .filter((ctx) => {
+          if (ctx.__typename === 'CheckRun') {
+            return ctx.conclusion === 'FAILURE';
+          }
+          return ctx.state === 'FAILURE' || ctx.state === 'ERROR';
+        })
+        .map((ctx) => ctx.name || ctx.context)
+        .filter(Boolean);
+      if (failed.length) {
+        checkInfo = 'Failed checks:\n' + failed.join('\n');
+      }
+    }
+    if (checkInfo) {
+      title += '\n\n' + checkInfo;
+    }
+  } else if (conclusion === 'PENDING' || conclusion === 'EXPECTED') {
     const pending = contexts
       .filter((ctx) => {
         if (ctx.__typename === 'CheckRun') {
@@ -1539,7 +1579,7 @@ const getPRPresentation = (pr, {
   }
 
   const { createdAt, reviews, comments, baseRefName, headRefOid, commits, latestReviews, reviewDecision } = pr;
-  const commitState = getCommitState(headRefOid, commits, url);
+  const commitState = getCommitState(headRefOid, commits, url, pr.mergeable);
   const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
   const branch = showBranch ? baseRefName : '';
   const ageClass = getAgeString(createdAt);

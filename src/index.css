@@ -50,6 +50,10 @@ span.failure, span.changes-requested {
   color: #d73a49;
 }
 
+span.conflict {
+  color: #d73a49;
+}
+
 a {
   color: #49a29f;
   font-weight: 550;
