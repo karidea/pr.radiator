@@ -161,7 +161,7 @@ const buildRecentCommitHistoryFragment = (sinceDateTime) => `fragment R on Ref{t
 
 const innerOpenPRDiscoveryQuery = 'pullRequests(last:15,states:OPEN){nodes{number updatedAt mergeable commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}';
 const commitStatusFields = 'oid statusCheckRollup{state contexts(first:25){totalCount nodes{__typename ... on StatusContext{context state targetUrl} ... on CheckRun{name conclusion status detailsUrl}}}}';
-const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft mergeable number author{login} reviews(first:15){nodes{state createdAt author{login} authorAssociation}} latestReviews(first:15){nodes{state author{login} authorAssociation}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
+const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft mergeable number author{login} reviews(first:15){nodes{state createdAt author{login} authorAssociation commit{oid}}} latestReviews(first:15){nodes{state author{login} authorAssociation commit{oid}}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
 const graphqlCostFragment = 'rateLimit{cost remaining resetAt}';
 
 const buildDiscoveryQuery = (owner, repos) => {
@@ -1194,16 +1194,18 @@ const getEffectivePermission = (repoName, login) => {
   return null;
 };
 
-const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecision, repoName) => {
+const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecision, repoName, headRefOid = null) => {
   const events = [];
 
   reviews?.nodes?.forEach((review) => {
     const currentState = review.state === 'COMMENTED' ? 'COMMENTED' : review.state;
+    const commitOid = review.commit?.oid || review.commitOid || null;
     events.push({
       createdAt: review.createdAt,
       author: getActorLogin(review.author),
       state: currentState,
       authorAssociation: review.authorAssociation,
+      commitOid,
     });
   });
 
@@ -1229,6 +1231,7 @@ const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecis
   if (currentEvent) compressedEvents.push(currentEvent);
 
   const latestByAuthor = new Map();
+  const latestCommitByAuthor = new Map();
   latestReviews?.nodes?.forEach((review) => {
     const login = getActorLogin(review.author);
     if (!login) return;
@@ -1236,6 +1239,8 @@ const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecis
       state: review.state,
       authorAssociation: review.authorAssociation,
     });
+    const coid = review.commit?.oid || review.commitOid || null;
+    if (coid) latestCommitByAuthor.set(login, coid);
   });
 
   compressedEvents.forEach((ev) => {
@@ -1272,11 +1277,19 @@ const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecis
         && ev.isActive
         && ev.isPrivileged
         && reviewDecision === 'REVIEW_REQUIRED';
+
+      // Determine if commits were added after this review (different head than the commit the review was left on).
+      // This is the key signal that a push happened after the review (may dismiss approvals or address CHANGES_REQUESTED).
+      const reviewCommitForCheck = latestCommitByAuthor.get(ev.author) || ev.commitOid;
+      ev.hasNewerCommits = Boolean(
+        headRefOid && reviewCommitForCheck && reviewCommitForCheck !== headRefOid
+      );
     } else {
       ev.isActive = true;
       ev.isPrivileged = false;
       ev.approvalDoesNotCount = false;
       ev.permissionKnown = true;
+      ev.hasNewerCommits = false;
     }
   });
 
@@ -1462,7 +1475,7 @@ const getCommitState = (headRefOid, commits, prUrl, mergeable = null) => {
   return `<a class="commit-status-link" href="${buildUrl}" target="_blank" rel="noopener noreferrer">${iconSpan}</a>`;
 };
 
-const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true, isPrivileged: isPrivilegedProp, approvalDoesNotCount = false, permissionKnown = true }) => {
+const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive = true, isPrivileged: isPrivilegedProp, approvalDoesNotCount = false, permissionKnown = true, hasNewerCommits = false }) => {
   const countBadge = (count ?? 1) > 1 ? `(${count})` : '';
   const authorWithCount = `${author}${countBadge}`;
   const formattedDate = createdAt.toLocaleString();
@@ -1475,15 +1488,18 @@ const TimelineEvent = ({ count, author, createdAt, state: eventState, isActive =
 
   if (eventState === 'APPROVED') {
     if (isStale) tooltip += ' (stale)';
+    else if (hasNewerCommits) tooltip += ' (new commits since)';
     if (muted) tooltip += isPrivileged ? ' (does not count toward review)' : ' (no write access)';
-    const cls = `event-group approved${isStale ? ' stale' : ''}${muted ? ' muted' : ''}${pending ? ' permission-pending' : ''}`;
-    return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.check}</span>`;
+    const cls = `event-group approved${isStale ? ' stale' : ''}${hasNewerCommits && !isStale ? ' newer-commits' : ''}${muted ? ' muted' : ''}${pending ? ' permission-pending' : ''}`;
+    const marker = (hasNewerCommits && !isStale) ? `<span class="review-marker">↻</span>` : '';
+    return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.check}${marker}</span>`;
   }
   if (eventState === 'CHANGES_REQUESTED') {
-    tooltip = `${authorWithCount} requested changes at ${formattedDate}${isStale ? ' (stale)' : ''}`;
+    tooltip = `${authorWithCount} requested changes at ${formattedDate}${isStale ? ' (stale)' : ''}${hasNewerCommits ? ' (new commits since)' : ''}`;
     if (muted) tooltip += ' (no write access)';
-    const cls = `event-group changes-requested${isStale ? ' stale' : ''}${muted ? ' muted' : ''}${pending ? ' permission-pending' : ''}`;
-    return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.times}</span>`;
+    const cls = `event-group changes-requested${isStale ? ' stale' : ''}${hasNewerCommits && !isStale ? ' newer-commits' : ''}${muted ? ' muted' : ''}${pending ? ' permission-pending' : ''}`;
+    const marker = (hasNewerCommits && !isStale) ? `<span class="review-marker">↻</span>` : '';
+    return `<span class="${cls}" title="${tooltip}">${authorWithCount}${ICONS.times}${marker}</span>`;
   }
   if (eventState === 'COMMENTED') {
     tooltip = `${authorWithCount} commented at ${formattedDate}`;
@@ -1598,7 +1614,7 @@ const getPRPresentation = (pr, {
   let eventsLengthForSignature = 0;
 
   if (showActivity) {
-    const events = combineReviewsAndComments(reviews, comments, latestReviews, reviewDecision, repository.name);
+    const events = combineReviewsAndComments(reviews, comments, latestReviews, reviewDecision, repository.name, headRefOid);
 
     const regularEvents = [];
     let sonarEvent = null;
@@ -1656,7 +1672,8 @@ const getPRPresentation = (pr, {
         ? (e.isPrivileged ? 'P' : 'p') + (e.permissionKnown ? 'K' : 'k')
         : '';
       const dnc = e.approvalDoesNotCount ? 'X' : '';
-      return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}${priv ? ':' + priv : ''}${dnc ? ':' + dnc : ''}`;
+      const newer = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED') && e.hasNewerCommits ? 'c' : '';
+      return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}${priv ? ':' + priv : ''}${dnc ? ':' + dnc : ''}${newer ? ':' + newer : ''}`;
     }).join(',')}|act:${activityOnSeparateLine ? 'b' : 'i'}|tail:${showActivity ? '1' : '0'}`,
     ageMarkup,
     ageClass,

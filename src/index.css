@@ -290,6 +290,25 @@ a {
   transform: none;
 }
 
+/* New commits pushed since an opinionated review (APPROVED or CHANGES_REQUESTED).
+   The ↻ marker provides a minimal visual cue that the review may be
+   outdated because commits were added afterwards. Especially useful for
+   CHANGES_REQUESTED so the requester knows they can re-review/approve. */
+.event-group.newer-commits {
+  font-weight: 600;
+}
+.event-group.changes-requested.newer-commits {
+  /* keep the strong red, marker helps call it out */
+}
+.review-marker {
+  font-size: 0.85em;
+  margin-left: 1px;
+  opacity: 0.95;
+}
+.event-group.changes-requested.newer-commits .review-marker {
+  color: #f5a60a; /* warm attention color without being loud */
+}
+
 .event-group.approved.muted,
 .event-group.changes-requested.muted {
   opacity: 0.8;
