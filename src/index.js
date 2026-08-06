@@ -2555,6 +2555,9 @@ const init = () => {
       return;
     }
     if (document.activeElement.tagName === 'INPUT') return;
+    // Let browser shortcuts through (Cmd/Ctrl+R reload, Cmd/Ctrl+C copy, etc.).
+    // Shift alone is fine — app shortcuts use it for R/B/A/G/?.
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
 
     const { showRepoLinks } = state;
 
