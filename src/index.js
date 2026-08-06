@@ -28,6 +28,25 @@ const EXTERNAL_MERGES_SEARCH_BATCH_SIZE = 10;
 
 const progressBar = document.getElementById('progress-bar');
 const repoRefreshStatus = document.getElementById('repo-refresh-status');
+
+/** In-flight fetch tracking: abort + generation so view switches stay responsive. */
+const FETCH_STATE_KEYS = {
+  open: 'isFetchingOpenPRs',
+  recent: 'isFetchingRecentPRs',
+  shortlog: 'isFetchingShortlog',
+  repos: 'isFetchingRepos',
+};
+const activeFetches = {
+  open: { controller: null, generation: 0 },
+  recent: { controller: null, generation: 0 },
+  shortlog: { controller: null, generation: 0 },
+  repos: { controller: null, generation: 0 },
+};
+let progressDepth = 0;
+
+const isAbortError = (error) => error?.name === 'AbortError'
+  || (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError');
+
 const repoView = document.getElementById('repo-view');
 const repoHeader = document.getElementById('repo-header');
 const repoList = document.getElementById('repo-list');
@@ -225,28 +244,28 @@ const chunkArray = (items, size) => Array.from(
 );
 
 const api = {
-  fetchDiscoveryBatches: async (token, owner, repos) => {
+  fetchDiscoveryBatches: async (token, owner, repos, signal) => {
     const chunks = chunkArray(repos, DISCOVERY_BATCH_SIZE);
     return Promise.all(chunks.map(async (chunk) => {
-      const payload = await api.fetchGraphQL(token, buildDiscoveryQuery(owner, chunk), { type: 'open-discovery' });
+      const payload = await api.fetchGraphQL(token, buildDiscoveryQuery(owner, chunk), { type: 'open-discovery', signal });
       return { payload, repos: chunk };
     }));
   },
-  fetchRecentBatches: async (token, owner, repos, sinceDateTime) => {
+  fetchRecentBatches: async (token, owner, repos, sinceDateTime, signal) => {
     const chunks = chunkArray(repos, GRAPHQL_REPO_BATCH_SIZE);
     return Promise.all(chunks.map(async (chunk) => ({
-      payload: await api.fetchGraphQL(token, buildRecentQuery(owner, chunk, sinceDateTime), { type: 'recent' }),
+      payload: await api.fetchGraphQL(token, buildRecentQuery(owner, chunk, sinceDateTime), { type: 'recent', signal }),
       repos: chunk,
     })));
   },
-  fetchHydrationBatches: async (token, owner, repoRequests) => {
+  fetchHydrationBatches: async (token, owner, repoRequests, signal) => {
     const chunks = chunkArray(repoRequests, GRAPHQL_REPO_BATCH_SIZE);
     return Promise.all(chunks.map(async (chunk) => ({
-      payload: await api.fetchGraphQL(token, buildHydrationQuery(owner, chunk), { type: 'open-hydrate' }),
+      payload: await api.fetchGraphQL(token, buildHydrationQuery(owner, chunk), { type: 'open-hydrate', signal }),
       repoRequests: chunk,
     })));
   },
-  fetchGraphQL: async (token, query, { type = 'graphql' } = {}) => {
+  fetchGraphQL: async (token, query, { type = 'graphql', signal } = {}) => {
     if (shouldPauseGitHubRefresh()) {
       throw new Error(getGitHubRateLimitPauseMessage());
     }
@@ -259,6 +278,7 @@ const api = {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ query }),
+      signal,
     });
     const responseReceivedAt = performance.now();
     const payload = await response.json();
@@ -317,13 +337,14 @@ const api = {
 
     return payload;
   },
-  queryTeamRepos: async (token, owner, team) => {
+  queryTeamRepos: async (token, owner, team, signal) => {
     let hasNextPage = true;
     let next = null;
     const repoNames = [];
 
     while (hasNextPage) {
-      const result = await api.fetchGraphQL(token, RepositoriesQuery(owner, team, next));
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      const result = await api.fetchGraphQL(token, RepositoriesQuery(owner, team, next), { signal });
       const repositories = result?.data?.organization?.team?.repositories;
 
       if (!repositories) {
@@ -341,13 +362,14 @@ const api = {
 
     return repoNames;
   },
-  queryTeamMembers: async (token, owner, team) => {
+  queryTeamMembers: async (token, owner, team, signal) => {
     let hasNextPage = true;
     let next = null;
     const logins = [];
 
     while (hasNextPage) {
-      const result = await api.fetchGraphQL(token, TeamMembersQuery(owner, team, next), { type: 'team-members' });
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      const result = await api.fetchGraphQL(token, TeamMembersQuery(owner, team, next), { type: 'team-members', signal });
       const members = result?.data?.organization?.team?.members;
 
       if (!members) {
@@ -671,7 +693,7 @@ const ensureCollaboratorPermissionsLoaded = async (prs) => {
   }
 };
 
-const fetchShortlogData = async (token, owner, repos, ignoreRepos, sinceDate) => {
+const fetchShortlogData = async (token, owner, repos, ignoreRepos, sinceDate, signal) => {
   const filteredRepos = repos.filter((repo) => !ignoreRepos.includes(repo));
   if (filteredRepos.length === 0) return [];
 
@@ -682,7 +704,7 @@ const fetchShortlogData = async (token, owner, repos, ignoreRepos, sinceDate) =>
 
   await Promise.all(chunks.map(async (chunk) => {
     const query = buildShortlogSearchQuery(owner, chunk, sinceDate);
-    const payload = await api.fetchGraphQL(token, query, { type: 'external-search' });
+    const payload = await api.fetchGraphQL(token, query, { type: 'external-search', signal });
     const data = payload?.data || {};
     chunk.forEach((repoName, index) => {
       const alias = getShortGraphQLAlias(index);
@@ -704,8 +726,9 @@ const fetchShortlogData = async (token, owner, repos, ignoreRepos, sinceDate) =>
     let cursor = initialCursor;
     let hasNextPage = true;
     while (hasNextPage) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       const query = buildShortlogPaginationQuery(owner, repoName, sinceDate, cursor);
-      const payload = await api.fetchGraphQL(token, query, { type: 'external-search-page' });
+      const payload = await api.fetchGraphQL(token, query, { type: 'external-search-page', signal });
       const searchData = payload?.data?.search;
       if (!searchData) break;
       searchData.nodes.forEach((node) => {
@@ -774,9 +797,8 @@ const fetchShortlog = async (options = {}) => {
     renderRepoRefreshStatus();
     return;
   }
+  const fetch = beginFetch('shortlog');
   try {
-    setState({ isFetchingShortlog: true });
-    startProgress();
     const repos = getVisibleRepos();
     let membersCache = loadPersistedMemberCache();
     if (forceRefreshMembers) {
@@ -786,11 +808,13 @@ const fetchShortlog = async (options = {}) => {
       });
     }
     membersCache = await refreshTeamMembersCache(token, owner, teams, membersCache);
+    if (!fetch.isCurrent()) return;
     const { logins: internalLogins, allLoaded } = getInternalLoginsFromCache(membersCache, teams);
     if (!allLoaded) {
       console.warn('⚠️ shortlog: some team member lists failed to load; classifications may be incomplete.');
     }
-    const prs = await fetchShortlogData(token, owner, repos, ignoreRepos, sinceDate);
+    const prs = await fetchShortlogData(token, owner, repos, ignoreRepos, sinceDate, fetch.signal);
+    if (!fetch.isCurrent()) return;
     const { totals, perRepo, allPRs } = classifyAndAggregateShortlog(prs, internalLogins);
     setState({
       shortlogData: {
@@ -804,10 +828,11 @@ const fetchShortlog = async (options = {}) => {
       },
     });
   } catch (error) {
-    console.error('Failed to fetch shortlog:', error);
+    if (!isAbortError(error)) {
+      console.error('Failed to fetch shortlog:', error);
+    }
   } finally {
-    stopProgress();
-    setState({ isFetchingShortlog: false });
+    finishFetch('shortlog', fetch.generation);
   }
 };
 
@@ -826,10 +851,10 @@ const needsHydration = (cachedPR, discoveredUpdatedAt, discoveredCommitConclusio
   return false;
 };
 
-const hydrateOpenPRs = async (token, owner, repoRequests) => {
+const hydrateOpenPRs = async (token, owner, repoRequests, signal) => {
   if (repoRequests.length === 0) return [];
 
-  const results = await api.fetchHydrationBatches(token, owner, repoRequests);
+  const results = await api.fetchHydrationBatches(token, owner, repoRequests, signal);
   const hydratedPRs = [];
 
   results.forEach(({ payload, repoRequests: repoChunk }) => {
@@ -883,18 +908,18 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
   ensureTeamMembersLoaded();
   const { merge = false } = options;
   const refreshStartedAt = performance.now();
+  const fetch = beginFetch('recent');
   try {
-    setState({ isFetchingRecentPRs: true });
-    startProgress();
     const filteredRepos = repos.filter((repo) => !ignoreRepos.includes(repo));
 
     if (filteredRepos.length === 0) {
-      if (!merge) setState({ recentPRs: [] });
+      if (!merge && fetch.isCurrent()) setState({ recentPRs: [] });
       return;
     }
 
     const sinceDateTime = `${state.recentPRsSinceDate}T00:00:00.000Z`;
-    const results = await api.fetchRecentBatches(token, owner, filteredRepos, sinceDateTime);
+    const results = await api.fetchRecentBatches(token, owner, filteredRepos, sinceDateTime, fetch.signal);
+    if (!fetch.isCurrent()) return;
     const fetchCompletedAt = performance.now();
     const refCommits = [];
     results.forEach(({ payload, repos: chunkRepos }) => {
@@ -928,6 +953,7 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
     const recentPRs = filteredRecentPRs.sort(sortByCommittedDateDesc);
     const transformCompletedAt = performance.now();
 
+    if (!fetch.isCurrent()) return;
     const renderStartedAt = performance.now();
     setState({
       recentPRs: merge
@@ -942,10 +968,11 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
       );
     }
   } catch (error) {
-    console.log('Failed to fetch recent PRs', error);
+    if (!isAbortError(error)) {
+      console.log('Failed to fetch recent PRs', error);
+    }
   } finally {
-    stopProgress();
-    setState({ isFetchingRecentPRs: false });
+    finishFetch('recent', fetch.generation);
   }
 };
 
@@ -959,18 +986,18 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
 
   const { merge = false } = options;
   const refreshStartedAt = performance.now();
+  const fetch = beginFetch('open');
   try {
-    setState({ isFetchingOpenPRs: true });
-    startProgress();
     const filteredRepos = repos.filter((repo) => !ignoreRepos.includes(repo));
 
     if (filteredRepos.length === 0) {
-      if (!merge) setState({ PRs: [] });
+      if (!merge && fetch.isCurrent()) setState({ PRs: [] });
       return;
     }
 
     const discoveryBatchSize = DISCOVERY_BATCH_SIZE;
-    const discoveryBatches = await api.fetchDiscoveryBatches(token, owner, filteredRepos);
+    const discoveryBatches = await api.fetchDiscoveryBatches(token, owner, filteredRepos, fetch.signal);
+    if (!fetch.isCurrent()) return;
     const discoveryCompletedAt = performance.now();
 
     const discoveredPRs = [];
@@ -1028,7 +1055,8 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
       numbers,
     }));
 
-    const hydratedPRs = await hydrateOpenPRs(token, owner, hydrateRequests);
+    const hydratedPRs = await hydrateOpenPRs(token, owner, hydrateRequests, fetch.signal);
+    if (!fetch.isCurrent()) return;
     const hydrateCompletedAt = performance.now();
     hydratedPRs.forEach(parseDatesInPR);
     hydratedPRs.forEach((pr) => {
@@ -1059,11 +1087,12 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
       ? mergePullRequestCache(state.PRs, openPRs, filteredRepos, sortByCreatedAt)
       : openPRs;
 
+    if (!fetch.isCurrent()) return;
     setState({ PRs: finalPRs });
 
     ensureCollaboratorPermissionsLoaded(finalPRs)
       .then(() => {
-        render();
+        if (fetch.isCurrent()) render();
       })
       .catch((error) => {
         console.error('Permission lookup failed:', error);
@@ -1077,10 +1106,11 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
       );
     }
   } catch (error) {
-    console.log('Failed to fetch open PRs', error);
+    if (!isAbortError(error)) {
+      console.log('Failed to fetch open PRs', error);
+    }
   } finally {
-    stopProgress();
-    setState({ isFetchingOpenPRs: false });
+    finishFetch('open', fetch.generation);
   }
 };
 
@@ -1130,23 +1160,25 @@ const refreshAllTeamRepos = async (configOverride = state.config) => {
     return configOverride;
   }
 
+  const fetch = beginFetch('repos');
   try {
-    setState({ isFetchingRepos: true });
-    startProgress();
-
     console.log(`🔄 Refreshing repositories for ${teams.length} team${teams.length === 1 ? '' : 's'}...`);
 
     const results = await Promise.allSettled(teams.map(async (teamSlug) => {
-      const repos = await api.queryTeamRepos(token, owner, teamSlug);
+      const repos = await api.queryTeamRepos(token, owner, teamSlug, fetch.signal);
       return { slug: teamSlug, repos };
     }));
+
+    if (!fetch.isCurrent()) return configOverride;
 
     const updatedRepos = teams.map((teamSlug, index) => {
       const result = results[index];
       if (result.status === 'fulfilled') {
         return result.value;
       }
-      console.error(`Failed to refresh repos for team ${teamSlug}`, result.reason);
+      if (!isAbortError(result.reason)) {
+        console.error(`Failed to refresh repos for team ${teamSlug}`, result.reason);
+      }
       return configOverride.repos.find((entry) => entry.slug === teamSlug) || { slug: teamSlug, repos: [] };
     });
 
@@ -1168,11 +1200,13 @@ const refreshAllTeamRepos = async (configOverride = state.config) => {
     refreshTeamMembersCache(token, owner, teams, loadPersistedMemberCache()).catch(() => {});
     return nextConfig;
   } catch (error) {
-    console.error('Failed to refresh team repositories:', error);
-    throw error;
+    if (!isAbortError(error)) {
+      console.error('Failed to refresh team repositories:', error);
+      throw error;
+    }
+    return configOverride;
   } finally {
-    stopProgress();
-    setState({ isFetchingRepos: false });
+    finishFetch('repos', fetch.generation);
   }
 };
 
@@ -1895,16 +1929,21 @@ const formatRateLimitResetTime = (timestamp) => new Date(timestamp).toLocaleTime
 });
 
 const startProgress = () => {
-  if (progressBar) progressBar.classList.add('active');
+  progressDepth += 1;
+  if (!progressBar) return;
+  progressBar.classList.remove('fade-out');
+  progressBar.classList.add('active');
 };
 
 const stopProgress = () => {
-  if (progressBar) {
-    progressBar.classList.add('fade-out');
-    setTimeout(() => {
-      if (progressBar) progressBar.classList.remove('active', 'fade-out');
-    }, 300);
-  }
+  progressDepth = Math.max(0, progressDepth - 1);
+  if (progressDepth > 0 || !progressBar) return;
+  progressBar.classList.add('fade-out');
+  setTimeout(() => {
+    if (progressDepth === 0 && progressBar) {
+      progressBar.classList.remove('active', 'fade-out');
+    }
+  }, 300);
 };
 
 const renderRepoRefreshStatus = () => {
@@ -1934,6 +1973,47 @@ const setState = (updates) => {
   state = { ...state, ...updates };
   renderRepoRefreshStatus();
   render();
+};
+
+const beginFetch = (kind) => {
+  const entry = activeFetches[kind];
+  if (entry.controller) {
+    entry.controller.abort();
+  }
+  entry.generation += 1;
+  entry.controller = new AbortController();
+  const generation = entry.generation;
+  setState({ [FETCH_STATE_KEYS[kind]]: true });
+  startProgress();
+  return {
+    signal: entry.controller.signal,
+    generation,
+    isCurrent: () => activeFetches[kind].generation === generation,
+  };
+};
+
+const finishFetch = (kind, generation) => {
+  stopProgress();
+  if (activeFetches[kind].generation !== generation) return;
+  activeFetches[kind].controller = null;
+  setState({ [FETCH_STATE_KEYS[kind]]: false });
+};
+
+const cancelFetch = (kind) => {
+  const entry = activeFetches[kind];
+  if (!entry.controller) return false;
+  entry.controller.abort();
+  entry.controller = null;
+  entry.generation += 1;
+  setState({ [FETCH_STATE_KEYS[kind]]: false });
+  return true;
+};
+
+const cancelFetchesExcept = (keepKinds = []) => {
+  const keep = new Set(keepKinds);
+  Object.keys(activeFetches).forEach((kind) => {
+    if (!keep.has(kind)) cancelFetch(kind);
+  });
 };
 
 const isRepoIgnored = (repoName) => state.config.ignoreRepos.includes(repoName);
@@ -2409,11 +2489,7 @@ const cycleActiveTeam = () => {
   return true;
 };
 
-const init = async () => {
-  if (state.config.token && state.config.owner && getAllReposFromMappings(state.config.repos).length > 0) {
-    await fetchOpenPRs(state.config.token, state.config.owner, getVisibleRepos(), state.config.ignoreRepos);
-  }
-
+const init = () => {
   useInterval(() => {
     const repos = getVisibleRepos();
     if (state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showShortlog && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
@@ -2572,6 +2648,7 @@ const init = async () => {
 
     const handlers = {
       o: () => {
+        cancelFetchesExcept(['open', 'repos']);
         setState({
           showRecentPRs: false,
           showRepoLinks: false,
@@ -2585,6 +2662,7 @@ const init = async () => {
       },
       m: () => {
         const showRecentPRs = !state.showRecentPRs || state.showRepoLinks || state.showShortlog;
+        cancelFetchesExcept(showRecentPRs ? ['recent', 'repos'] : ['open', 'repos']);
         setState({
           showRecentPRs,
           showRepoLinks: false,
@@ -2599,6 +2677,7 @@ const init = async () => {
       l: () => {
         if (state.showRepoLinks) {
           persistConfig(state.config);
+          cancelFetchesExcept(['open', 'repos']);
           setState({
             showRepoLinks: false,
             showRecentPRs: false,
@@ -2612,6 +2691,7 @@ const init = async () => {
           return;
         }
 
+        cancelFetchesExcept(['repos']);
         setState({
           showRepoLinks: true,
           showShortlog: false,
@@ -2624,6 +2704,7 @@ const init = async () => {
           || !state.shortlogData
           || state.shortlogData.sinceDate !== state.shortlogSinceDate
           || state.shortlogData.activeTeamSlug !== state.activeTeamSlug;
+        cancelFetchesExcept(['shortlog', 'repos']);
         setState({
           showShortlog: true,
           showRecentPRs: false,
@@ -2713,19 +2794,6 @@ const init = async () => {
     }
   });
 
-  if (state.config.token && state.config.owner && state.config.teams.length > 0 && getAllReposFromMappings(state.config.repos).length === 0) {
-    try {
-      const refreshedConfig = await refreshAllTeamRepos();
-      await refreshCurrentView({
-        configOverride: refreshedConfig,
-        reposOverride: getAllConfiguredRepos(refreshedConfig),
-        merge: false,
-      });
-    } catch (error) {
-      console.error('Error loading team repositories', error);
-    }
-  }
-
   document.addEventListener('visibilitychange', () => {
     const repos = getVisibleRepos();
     if (document.visibilityState === 'visible' && state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showShortlog && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
@@ -2735,7 +2803,25 @@ const init = async () => {
     }
   });
 
+  // Paint UI and bind keys before any network work so view switches never feel stuck.
   render();
+
+  const hasRepos = getAllReposFromMappings(state.config.repos).length > 0;
+  if (state.config.token && state.config.owner && hasRepos) {
+    refreshCurrentView().catch((error) => {
+      console.error('Error loading initial PRs', error);
+    });
+  } else if (state.config.token && state.config.owner && state.config.teams.length > 0) {
+    refreshAllTeamRepos()
+      .then((refreshedConfig) => refreshCurrentView({
+        configOverride: refreshedConfig,
+        reposOverride: getAllConfiguredRepos(refreshedConfig),
+        merge: false,
+      }))
+      .catch((error) => {
+        console.error('Error loading team repositories', error);
+      });
+  }
 };
 
 init();
