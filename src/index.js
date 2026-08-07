@@ -25,6 +25,8 @@ const TEAM_MEMBERS_CACHE_TTL_MS = 60 * 60 * 1000;
 const COLLABORATOR_PERMISSION_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const COLLABORATOR_PERMISSION_LOOKUPS_PER_QUERY = 30;
 const EXTERNAL_MERGES_SEARCH_BATCH_SIZE = 10;
+/** Skip opportunistic refreshes (focus, poll, view switch) if this view fetched recently. */
+const VIEW_FETCH_COOLDOWN_MS = 10_000;
 
 const progressBar = document.getElementById('progress-bar');
 const repoRefreshStatus = document.getElementById('repo-refresh-status');
@@ -42,10 +44,23 @@ const activeFetches = {
   shortlog: { controller: null, generation: 0 },
   repos: { controller: null, generation: 0 },
 };
+const lastViewFetchAt = {
+  open: 0,
+  recent: 0,
+  shortlog: 0,
+};
 let progressDepth = 0;
 
 const isAbortError = (error) => error?.name === 'AbortError'
   || (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError');
+
+const isViewFetchFresh = (kind) => Date.now() - (lastViewFetchAt[kind] || 0) < VIEW_FETCH_COOLDOWN_MS;
+
+const markViewFetched = (kind) => {
+  if (kind in lastViewFetchAt) {
+    lastViewFetchAt[kind] = Date.now();
+  }
+};
 
 const repoView = document.getElementById('repo-view');
 const repoHeader = document.getElementById('repo-header');
@@ -789,7 +804,7 @@ const classifyAndAggregateShortlog = (prs, internalLogins) => {
 };
 
 const fetchShortlog = async (options = {}) => {
-  const { forceRefreshMembers = false } = options;
+  const { forceRefreshMembers = false, force = false } = options;
   const { token, owner, teams, ignoreRepos } = state.config;
   const sinceDate = state.shortlogSinceDate;
   if (!token || !owner || teams.length === 0) return;
@@ -797,6 +812,7 @@ const fetchShortlog = async (options = {}) => {
     renderRepoRefreshStatus();
     return;
   }
+  if (!force && isViewFetchFresh('shortlog')) return;
   const fetch = beginFetch('shortlog');
   try {
     const repos = getVisibleRepos();
@@ -1115,7 +1131,7 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
 };
 
 const refreshCurrentView = async (options = {}) => {
-  const { merge = Boolean(state.activeTeamSlug) } = options;
+  const { merge = Boolean(state.activeTeamSlug), force = false } = options;
   const config = options.configOverride || state.config;
   const activeTeamSlug = options.activeTeamSlugOverride ?? state.activeTeamSlug;
   const { token, owner, ignoreRepos } = config;
@@ -1137,15 +1153,18 @@ const refreshCurrentView = async (options = {}) => {
   }
 
   if (state.showShortlog) {
-    await fetchShortlog();
+    if (!force && isViewFetchFresh('shortlog')) return;
+    await fetchShortlog({ force });
     return;
   }
 
   if (state.showRecentPRs) {
+    if (!force && isViewFetchFresh('recent')) return;
     await fetchRecentPRs(token, owner, repos, ignoreRepos, { merge });
     return;
   }
 
+  if (!force && isViewFetchFresh('open')) return;
   await fetchOpenPRs(token, owner, repos, ignoreRepos, { merge });
 };
 
@@ -1996,6 +2015,8 @@ const finishFetch = (kind, generation) => {
   stopProgress();
   if (activeFetches[kind].generation !== generation) return;
   activeFetches[kind].controller = null;
+  // Completed (not superseded/aborted) — count toward the short cooldown window.
+  markViewFetched(kind);
   setState({ [FETCH_STATE_KEYS[kind]]: false });
 };
 
@@ -2117,6 +2138,7 @@ const refreshAfterConfigChange = async (nextConfig, { activeTeamSlugOverride = s
     activeTeamSlugOverride,
     reposOverride: getVisibleRepos(refreshedConfig, activeTeamSlugOverride),
     merge: false,
+    force: true,
   });
   closeSettings();
 };
@@ -2497,7 +2519,7 @@ const init = () => {
         console.error('Error refreshing PRs on interval', error);
       });
     }
-  }, 300000);
+  }, 90000);
 
   if (!settingsForm.hasAttribute('data-initialized')) {
     ownerInput.value = state.config.owner;
@@ -2527,7 +2549,7 @@ const init = () => {
     if (!newDate || !state.showShortlog) return;
     localStorage.setItem(STORAGE_KEYS.shortlogSinceDate, newDate);
     setState({ shortlogSinceDate: newDate, shortlogData: null });
-    fetchShortlog().catch((error) => {
+    fetchShortlog({ force: true }).catch((error) => {
       console.error('Error fetching shortlog after date change', error);
     });
   });
@@ -2537,6 +2559,7 @@ const init = () => {
     if (!newDate || !state.showRecentPRs) return;
     localStorage.setItem(STORAGE_KEYS.recentPRsSinceDate, newDate);
     setState({ recentPRsSinceDate: newDate });
+    // Date change invalidates the cache — always fetch (direct call bypasses view cooldown).
     const { token, owner, ignoreRepos } = state.config;
     fetchRecentPRs(token, owner, getVisibleRepos(), ignoreRepos).catch((error) => {
       console.error('Error fetching merged PRs after date change', error);
@@ -2716,7 +2739,7 @@ const init = () => {
           selectedPrIndex: -1,
         });
         if (needsFetch) {
-          fetchShortlog().catch((error) => {
+          fetchShortlog({ force: true }).catch((error) => {
             console.error('Error fetching shortlog', error);
           });
         }
@@ -2738,12 +2761,12 @@ const init = () => {
       r: () => {
         setState({ selectedPrIndex: -1, selectedRepoIndex: -1 });
         if (state.showShortlog) {
-          fetchShortlog().catch((error) => {
+          fetchShortlog({ force: true }).catch((error) => {
             console.error('Error refreshing shortlog', error);
           });
           return;
         }
-        refreshCurrentView().catch((error) => {
+        refreshCurrentView({ force: true }).catch((error) => {
           console.error('Error refreshing current view', error);
         });
       },
@@ -2763,9 +2786,14 @@ const init = () => {
         refreshAllTeamRepos()
           .then((config) => {
             if (state.showShortlog) {
-              return fetchShortlog({ forceRefreshMembers: true });
+              return fetchShortlog({ force: true, forceRefreshMembers: true });
             }
-            return refreshCurrentView({ configOverride: config, reposOverride: getAllConfiguredRepos(config), merge: false });
+            return refreshCurrentView({
+              configOverride: config,
+              reposOverride: getAllConfiguredRepos(config),
+              merge: false,
+              force: true,
+            });
           })
           .catch((error) => {
             console.error('Error refreshing team repositories', error);
@@ -2775,7 +2803,7 @@ const init = () => {
         cycleActiveTeam();
         if (state.showShortlog) {
           setState({ shortlogData: null });
-          fetchShortlog().catch((error) => {
+          fetchShortlog({ force: true }).catch((error) => {
             console.error('Error refreshing shortlog after team change', error);
           });
         }
