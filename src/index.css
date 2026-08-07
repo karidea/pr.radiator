@@ -354,14 +354,9 @@ a {
 }
 
 .event-group .event-icon {
-  margin-left: 2px;
+  margin-left: 3px;
   margin-right: 0;
   transition: color 220ms ease, filter 220ms ease, transform 160ms ease;
-}
-
-.event-group .event-icon {
-  margin-left: 2px;
-  margin-right: 0;
 }
 
 #progress-bar {
@@ -532,8 +527,6 @@ a {
   color: #8a8a6f;
   margin-left: 4ch;
   padding-left: 3px;
-  font-size: 11px;
-  line-height: 1.2;
 }
 
 .pr-item.selected .pr-main-line {
