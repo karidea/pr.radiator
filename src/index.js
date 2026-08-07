@@ -14,6 +14,7 @@ const STORAGE_KEYS = {
   shortlogSinceDate: 'PR_RADIATOR_SHORTLOG_SINCE_DATE',
   recentPRsSinceDate: 'PR_RADIATOR_RECENT_PRS_SINCE_DATE',
   activityOnSeparateLine: 'PR_RADIATOR_ACTIVITY_SEPARATE_LINE',
+  notifyNewPRs: 'PR_RADIATOR_NOTIFY_NEW_PRS',
 };
 
 const GRAPHQL_REPO_BATCH_SIZE = 2;
@@ -140,6 +141,224 @@ const isDependabotFilterActive = () => state.showDependabotPRs && !state.showRec
 const shouldHideDependabotPRs = () => !state.showDependabotPRs && !state.showRecentPRs && !state.showRepoLinks;
 
 const isNeedsReviewFilterActive = () => state.showNeedsReviewPRs && !state.showRecentPRs && !state.showRepoLinks;
+
+/** PR urls already seen while notifications are enabled (baseline + updates). */
+let knownOpenPrUrls = null;
+/** Scope identity so team/config changes re-baseline instead of spamming "new" PRs. */
+let lastNotifyScopeKey = '';
+
+const getNotifyScopeKey = () => {
+  const { owner, ignoreRepos } = state.config;
+  const team = state.activeTeamSlug || '';
+  const ignore = [...ignoreRepos].sort().join(',');
+  return `${owner}|${team}|${ignore}|dep:${state.showDependabotPRs ? 1 : 0}|nr:${state.showNeedsReviewPRs ? 1 : 0}`;
+};
+
+/** Open-list filters (team, ignore, dependabot, needs-review) — not gated on current view. */
+const filterOpenDisplayPRs = (prs) => {
+  const teams = state.config.teams;
+  const visibleTeamSlugs = new Set(state.activeTeamSlug ? [state.activeTeamSlug] : teams);
+  const ignoredRepos = new Set(state.config.ignoreRepos);
+  const hideDependabot = !state.showDependabotPRs;
+  const needsReviewOnly = state.showNeedsReviewPRs;
+  const displayPRs = [];
+
+  prs.forEach((pr) => {
+    if (!pr.teamSlugs?.some((slug) => visibleTeamSlugs.has(slug))) return;
+    if (ignoredRepos.has(pr.repository.name)) return;
+    if (hideDependabot && getActorLogin(pr.author, '') === 'dependabot') return;
+    if (needsReviewOnly && pr.reviewDecision !== 'REVIEW_REQUIRED' && pr.reviewDecision !== null) return;
+    displayPRs.push(pr);
+  });
+
+  return displayPRs;
+};
+
+const baselineOpenPrUrls = (prs = state.PRs) => {
+  const filtered = filterOpenDisplayPRs(prs);
+  knownOpenPrUrls = new Set(filtered.map((pr) => pr.url).filter(Boolean));
+  lastNotifyScopeKey = getNotifyScopeKey();
+};
+
+const truncateNotifyText = (text, max = 72) => {
+  const value = String(text || '').trim();
+  if (value.length <= max) return value;
+  return `${value.slice(0, max - 1)}…`;
+};
+
+/**
+ * Notify when the user is not actively in this page.
+ * Focus (not visibility): other tab, other app, or unfocused window still counts.
+ * document.hidden alone misses "browser visible but focused elsewhere".
+ */
+const shouldShowDesktopNotification = () => {
+  if (typeof document.hasFocus === 'function') {
+    return !document.hasFocus();
+  }
+  return document.visibilityState === 'hidden' || document.hidden;
+};
+
+const getAppBaseUrl = () => (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL) || '/';
+
+/** Service worker registration for notificationclick → openWindow (focusable new tab). */
+let notificationSwPromise = null;
+
+const ensureNotificationServiceWorker = () => {
+  if (!('serviceWorker' in navigator)) return Promise.resolve(null);
+  if (notificationSwPromise) return notificationSwPromise;
+
+  const base = getAppBaseUrl();
+  const swUrl = `${base.endsWith('/') ? base : `${base}/`}sw.js`;
+  notificationSwPromise = navigator.serviceWorker
+    .register(swUrl, { scope: base })
+    .then(() => navigator.serviceWorker.ready)
+    .catch((error) => {
+      console.warn('Notification service worker registration failed', error);
+      notificationSwPromise = null;
+      return null;
+    });
+  return notificationSwPromise;
+};
+
+const buildNotifyIconUrl = () => {
+  const base = getAppBaseUrl();
+  const iconPath = `${base.endsWith('/') ? base : `${base}/`}favicon.ico`;
+  try {
+    return new URL(iconPath, window.location.origin).href;
+  } catch (_) {
+    return undefined;
+  }
+};
+
+const showNewPrNotification = async (pr) => {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+
+  // Keep copy tiny — OS already shows site origin; no room for owner/host/urls.
+  // Plain text only (no HTML/links). Click opens the PR via service worker when possible.
+  const repo = pr.repository?.name || 'repo';
+  const number = pr.number != null ? pr.number : '?';
+  const title = `${repo}#${number}`;
+  const author = getActorLogin(pr.author, 'unknown');
+  const prTitle = truncateNotifyText(pr.title || 'New pull request', 72);
+  const body = `${author} · ${prTitle}`;
+  const icon = buildNotifyIconUrl();
+  const options = {
+    body,
+    tag: `pr-radiator:${pr.url || title}`,
+    data: { url: pr.url || '' },
+    requireInteraction: false,
+    ...(icon ? { icon } : {}),
+  };
+
+  try {
+    // SW path: notificationclick + clients.openWindow focuses the new tab.
+    // Page-level Notification.onclick cannot reliably do that (browser focuses this origin).
+    const registration = await ensureNotificationServiceWorker();
+    if (registration?.showNotification) {
+      await registration.showNotification(title, options);
+      return;
+    }
+  } catch (error) {
+    console.warn('Service worker notification failed, falling back', error);
+  }
+
+  try {
+    const notification = new Notification(title, options);
+    notification.onclick = () => {
+      notification.close();
+      if (pr.url) window.open(pr.url, '_blank');
+    };
+  } catch (error) {
+    console.warn('Failed to show PR notification', error);
+  }
+};
+
+const maybeNotifyNewOpenPRs = (prs) => {
+  if (!state.notifyNewPRs) return;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+
+  const scopeKey = getNotifyScopeKey();
+  if (scopeKey !== lastNotifyScopeKey) {
+    baselineOpenPrUrls(prs);
+    return;
+  }
+
+  const filtered = filterOpenDisplayPRs(prs);
+  if (knownOpenPrUrls === null) {
+    knownOpenPrUrls = new Set(filtered.map((pr) => pr.url).filter(Boolean));
+    return;
+  }
+
+  const nextUrls = new Set();
+  const newPrs = [];
+  filtered.forEach((pr) => {
+    if (!pr.url) return;
+    nextUrls.add(pr.url);
+    if (!knownOpenPrUrls.has(pr.url)) {
+      newPrs.push(pr);
+    }
+  });
+
+  if (shouldShowDesktopNotification() && newPrs.length > 0) {
+    newPrs.forEach((pr) => {
+      showNewPrNotification(pr).catch((error) => {
+        console.warn('Failed to show new-PR notification', error);
+      });
+    });
+  }
+
+  knownOpenPrUrls = nextUrls;
+};
+
+const setNotifyNewPRsEnabled = async (enabled) => {
+  if (!enabled) {
+    localStorage.setItem(STORAGE_KEYS.notifyNewPRs, 'false');
+    knownOpenPrUrls = null;
+    lastNotifyScopeKey = '';
+    setState({ notifyNewPRs: false });
+    flashStatus('notify off');
+    return;
+  }
+
+  if (typeof Notification === 'undefined') {
+    console.warn('Desktop notifications are not supported in this browser.');
+    localStorage.setItem(STORAGE_KEYS.notifyNewPRs, 'false');
+    setState({ notifyNewPRs: false });
+    flashStatus('notify unavailable');
+    return;
+  }
+
+  let permission = Notification.permission;
+  if (permission === 'default') {
+    try {
+      permission = await Notification.requestPermission();
+    } catch (error) {
+      console.warn('Notification permission request failed', error);
+      permission = 'denied';
+    }
+  }
+
+  if (permission !== 'granted') {
+    console.warn('Notification permission not granted; new-PR alerts stay off.');
+    localStorage.setItem(STORAGE_KEYS.notifyNewPRs, 'false');
+    setState({ notifyNewPRs: false });
+    flashStatus('notify denied');
+    return;
+  }
+
+  localStorage.setItem(STORAGE_KEYS.notifyNewPRs, 'true');
+  baselineOpenPrUrls(state.PRs);
+  setState({ notifyNewPRs: true });
+  flashStatus('notify on');
+  // Warm the SW so the first alert can use openWindow on click.
+  ensureNotificationServiceWorker().catch(() => {});
+};
+
+const toggleNotifyNewPRs = () => {
+  setNotifyNewPRsEnabled(!state.notifyNewPRs).catch((error) => {
+    console.error('Failed to toggle new-PR notifications', error);
+  });
+};
 
 let persistConfigFrame = 0;
 let pendingConfigPersist = null;
@@ -1105,6 +1324,7 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
 
     if (!fetch.isCurrent()) return;
     setState({ PRs: finalPRs });
+    maybeNotifyNewOpenPRs(finalPRs);
 
     ensureCollaboratorPermissionsLoaded(finalPRs)
       .then(() => {
@@ -1843,6 +2063,7 @@ const initialState = {
   showTeamBadges: false,
   showBranch: false,
   activityOnSeparateLine: localStorage.getItem(STORAGE_KEYS.activityOnSeparateLine) === 'true',
+  notifyNewPRs: localStorage.getItem(STORAGE_KEYS.notifyNewPRs) === 'true',
   shortlogData: null,
   shortlogSinceDate: localStorage.getItem(STORAGE_KEYS.shortlogSinceDate) || `${new Date().getFullYear()}-01-01`,
   shortlogAuthorFilter: 'external',
@@ -1965,8 +2186,37 @@ const stopProgress = () => {
   }, 300);
 };
 
+/** Brief CLI-style status (toggle feedback). Held through setState/render until it expires. */
+let statusFlashTimer = 0;
+let statusFlashMessage = null;
+
+const flashStatus = (message, durationMs = 1600) => {
+  if (!repoRefreshStatus) return;
+  if (statusFlashTimer) {
+    clearTimeout(statusFlashTimer);
+    statusFlashTimer = 0;
+  }
+  statusFlashMessage = message;
+  repoRefreshStatus.textContent = message;
+  repoRefreshStatus.classList.remove('hidden');
+  repoRefreshStatus.classList.add('active');
+  statusFlashTimer = window.setTimeout(() => {
+    statusFlashTimer = 0;
+    statusFlashMessage = null;
+    renderRepoRefreshStatus();
+  }, durationMs);
+};
+
 const renderRepoRefreshStatus = () => {
   if (!repoRefreshStatus) return;
+
+  // Keep ephemeral feedback visible even if setState re-renders mid-flash.
+  if (statusFlashMessage) {
+    repoRefreshStatus.textContent = statusFlashMessage;
+    repoRefreshStatus.classList.remove('hidden');
+    repoRefreshStatus.classList.add('active');
+    return;
+  }
 
   const activeRateLimit = getActiveGitHubRateLimit();
   if (activeRateLimit.isCoolingDown && activeRateLimit.resetAt) {
@@ -2129,6 +2379,9 @@ const applyConfigLocally = (nextConfig, updates = {}) => {
     config: nextConfig,
     ...updates,
   });
+  if (state.notifyNewPRs) {
+    baselineOpenPrUrls(state.PRs);
+  }
 };
 
 const refreshAfterConfigChange = async (nextConfig, { activeTeamSlugOverride = state.activeTeamSlug } = {}) => {
@@ -2345,6 +2598,7 @@ const render = () => {
       : filteredCount !== null ? filteredCount : '—';
     const shortlogSummaryParts = ['shortlog'];
     if (filterType !== 'all') shortlogSummaryParts.push(filterType);
+    if (state.notifyNewPRs) shortlogSummaryParts.push('notify');
     if (scopeLabel) shortlogSummaryParts.push(scopeLabel);
     const shortlogSummaryEl = `<span class="view-summary">— ${shortlogSummaryParts.join(' | ')}</span>`;
     shortlogHeaderTitle.innerHTML = `Pull requests (${badge}) ${shortlogSummaryEl}`;
@@ -2359,7 +2613,12 @@ const render = () => {
     renderCache.mode = 'repos';
 
     const badgeEl = `(${visibleRepos.length})`;
-    const summaryEl = scopeLabel ? `<span class="view-summary">— ${scopeLabel}</span>` : '';
+    const repoSummaryParts = [];
+    if (state.notifyNewPRs) repoSummaryParts.push('notify');
+    if (scopeLabel) repoSummaryParts.push(scopeLabel);
+    const summaryEl = repoSummaryParts.length > 0
+      ? `<span class="view-summary">— ${repoSummaryParts.join(' | ')}</span>`
+      : '';
     repoHeader.innerHTML = `Repositories ${badgeEl}${summaryEl ? ` ${summaryEl}` : ''}`;
 
     repoList.innerHTML = visibleRepos.map((repo, index) => {
@@ -2396,19 +2655,18 @@ const render = () => {
   prView.classList.remove('hidden');
 
   const sourcePRs = state.showRecentPRs ? state.recentPRs : state.PRs;
-  const visibleTeamSlugs = new Set(state.activeTeamSlug ? [state.activeTeamSlug] : teams);
-  const ignoredRepos = new Set(state.config.ignoreRepos);
-  const hideDependabot = shouldHideDependabotPRs();
-  const needsReviewOnly = isNeedsReviewFilterActive();
-  const displayPRs = [];
-
-  sourcePRs.forEach((pr) => {
-    if (!pr.teamSlugs.some((slug) => visibleTeamSlugs.has(slug))) return;
-    if (ignoredRepos.has(pr.repository.name)) return;
-    if (hideDependabot && getActorLogin(pr.author, '') === 'dependabot') return;
-    if (needsReviewOnly && pr.reviewDecision !== 'REVIEW_REQUIRED' && pr.reviewDecision !== null) return;
-    displayPRs.push(pr);
-  });
+  // Open list (and notifications) share filterOpenDisplayPRs. Recent list only
+  // applies team + ignore so dependabot/needs-review toggles stay open-view only.
+  const displayPRs = state.showRecentPRs
+    ? (() => {
+      const visibleTeamSlugs = new Set(state.activeTeamSlug ? [state.activeTeamSlug] : teams);
+      const ignoredRepos = new Set(state.config.ignoreRepos);
+      return sourcePRs.filter((pr) => (
+        pr.teamSlugs.some((slug) => visibleTeamSlugs.has(slug))
+        && !ignoredRepos.has(pr.repository.name)
+      ));
+    })()
+    : filterOpenDisplayPRs(sourcePRs);
 
   renderCache.displayPRs = displayPRs;
   renderCache.mode = state.showRecentPRs ? 'recent-prs' : 'open-prs';
@@ -2418,6 +2676,7 @@ const render = () => {
     if (prState) summaryParts.push(prState.toLowerCase());
     if (isDependabotFilterActive()) summaryParts.push('dependabot');
     if (isNeedsReviewFilterActive()) summaryParts.push('awaiting review');
+    if (state.notifyNewPRs) summaryParts.push('notify');
     if (scopeLabel) summaryParts.push(scopeLabel);
     const summaryEl = summaryParts.length > 0 ? `<span class="view-summary">— ${summaryParts.join(' | ')}</span>` : '';
     return `${title} (${badgeContent})${summaryEl ? ` ${summaryEl}` : ''}`;
@@ -2508,10 +2767,18 @@ const cycleActiveTeam = () => {
     selectedRepoIndex: -1,
     selectedPrIndex: -1,
   });
+  // Re-baseline so team-scoped lists don't look like a flood of "new" PRs.
+  if (state.notifyNewPRs) {
+    baselineOpenPrUrls(state.PRs);
+  }
   return true;
 };
 
 const init = () => {
+  if (state.notifyNewPRs) {
+    ensureNotificationServiceWorker().catch(() => {});
+  }
+
   useInterval(() => {
     const repos = getVisibleRepos();
     if (state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showShortlog && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
@@ -2519,7 +2786,7 @@ const init = () => {
         console.error('Error refreshing PRs on interval', error);
       });
     }
-  }, 90000);
+  }, 75000);
 
   if (!settingsForm.hasAttribute('data-initialized')) {
     ownerInput.value = state.config.owner;
@@ -2744,8 +3011,15 @@ const init = () => {
           });
         }
       },
-      d: () => setState({ showDependabotPRs: !state.showDependabotPRs, selectedPrIndex: -1 }),
-      n: () => setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs, selectedPrIndex: -1 }),
+      d: () => {
+        setState({ showDependabotPRs: !state.showDependabotPRs, selectedPrIndex: -1 });
+        if (state.notifyNewPRs) baselineOpenPrUrls(state.PRs);
+      },
+      a: () => {
+        setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs, selectedPrIndex: -1 });
+        if (state.notifyNewPRs) baselineOpenPrUrls(state.PRs);
+      },
+      n: () => toggleNotifyNewPRs(),
       b: () => setState({ showTeamBadges: !state.showTeamBadges }),
       B: () => setState({ showBranch: !state.showBranch }),
       A: () => {

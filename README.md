@@ -23,7 +23,7 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 * **d** - dependabot
 * **f** - cycle author
 * **i** - ignore
-* **n** - awaiting review
+* **a** - awaiting review
 * **t** - cycle team
 
 ### Navigation
@@ -36,5 +36,6 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 * **?** - help
 * **c** - config
 * **Esc** - close config
+* **n** - new-PR notifications
 * **r** - refresh PRs
 * **R** - refresh repos
