@@ -316,7 +316,6 @@ const setNotifyNewPRsEnabled = async (enabled) => {
     knownOpenPrUrls = null;
     lastNotifyScopeKey = '';
     setState({ notifyNewPRs: false });
-    flashStatus('notify off');
     return;
   }
 
@@ -324,7 +323,6 @@ const setNotifyNewPRsEnabled = async (enabled) => {
     console.warn('Desktop notifications are not supported in this browser.');
     localStorage.setItem(STORAGE_KEYS.notifyNewPRs, 'false');
     setState({ notifyNewPRs: false });
-    flashStatus('notify unavailable');
     return;
   }
 
@@ -342,14 +340,12 @@ const setNotifyNewPRsEnabled = async (enabled) => {
     console.warn('Notification permission not granted; new-PR alerts stay off.');
     localStorage.setItem(STORAGE_KEYS.notifyNewPRs, 'false');
     setState({ notifyNewPRs: false });
-    flashStatus('notify denied');
     return;
   }
 
   localStorage.setItem(STORAGE_KEYS.notifyNewPRs, 'true');
   baselineOpenPrUrls(state.PRs);
   setState({ notifyNewPRs: true });
-  flashStatus('notify on');
   // Warm the SW so the first alert can use openWindow on click.
   ensureNotificationServiceWorker().catch(() => {});
 };
@@ -2186,37 +2182,8 @@ const stopProgress = () => {
   }, 300);
 };
 
-/** Brief CLI-style status (toggle feedback). Held through setState/render until it expires. */
-let statusFlashTimer = 0;
-let statusFlashMessage = null;
-
-const flashStatus = (message, durationMs = 1600) => {
-  if (!repoRefreshStatus) return;
-  if (statusFlashTimer) {
-    clearTimeout(statusFlashTimer);
-    statusFlashTimer = 0;
-  }
-  statusFlashMessage = message;
-  repoRefreshStatus.textContent = message;
-  repoRefreshStatus.classList.remove('hidden');
-  repoRefreshStatus.classList.add('active');
-  statusFlashTimer = window.setTimeout(() => {
-    statusFlashTimer = 0;
-    statusFlashMessage = null;
-    renderRepoRefreshStatus();
-  }, durationMs);
-};
-
 const renderRepoRefreshStatus = () => {
   if (!repoRefreshStatus) return;
-
-  // Keep ephemeral feedback visible even if setState re-renders mid-flash.
-  if (statusFlashMessage) {
-    repoRefreshStatus.textContent = statusFlashMessage;
-    repoRefreshStatus.classList.remove('hidden');
-    repoRefreshStatus.classList.add('active');
-    return;
-  }
 
   const activeRateLimit = getActiveGitHubRateLimit();
   if (activeRateLimit.isCoolingDown && activeRateLimit.resetAt) {
