@@ -571,6 +571,22 @@ a {
   color: #8B5CF6;
 }
 
+.copilot.copilot-approved .event-icon {
+  color: #2da44e;
+}
+
+.copilot.copilot-changes .event-icon {
+  color: #dbab09;
+}
+
+.copilot.copilot-closer-look .event-icon {
+  color: #58a6ff;
+}
+
+.copilot.copilot-blocked .event-icon {
+  color: #d73a49;
+}
+
 .github .event-icon {
   color: #c9d1d9;
 }

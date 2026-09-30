@@ -410,7 +410,7 @@ const buildRecentCommitHistoryFragment = (sinceDateTime) => `fragment R on Ref{t
 
 const innerOpenPRDiscoveryQuery = 'pullRequests(last:15,states:OPEN){nodes{number updatedAt mergeable commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}';
 const commitStatusFields = 'oid statusCheckRollup{state contexts(first:25){totalCount nodes{__typename ... on StatusContext{context state targetUrl} ... on CheckRun{name conclusion status detailsUrl}}}}';
-const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft mergeable number author{login} reviews(first:15){nodes{state createdAt author{login} authorAssociation commit{oid}}} latestReviews(first:15){nodes{state author{login} authorAssociation commit{oid}}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
+const openPRHydrationFields = `title url createdAt updatedAt baseRefName headRefOid isDraft mergeable number author{login} reviews(first:15){nodes{state createdAt author{login} authorAssociation commit{oid}}} latestReviews(first:15){nodes{state author{login} authorAssociation commit{oid}}} recentReviews:reviews(last:10){nodes{createdAt author{login} body}} comments(first:5){nodes{createdAt author{login}}} commits(last:1){nodes{commit{${commitStatusFields}}}} reviewDecision`;
 const graphqlCostFragment = 'rateLimit{cost remaining resetAt}';
 
 const buildDiscoveryQuery = (owner, repos) => {
@@ -638,6 +638,90 @@ const isCopilotLogin = (author) => {
   if (!author) return false;
   const login = (typeof author === 'string' ? author : (author.login || '')).toLowerCase();
   return login.includes('copilot');
+};
+
+// Copilot code review overview (`<!-- ccr-overview-v2 -->`) assessment headings.
+// Observed: 🟢 Approval recommended, 🟡 Changes recommended, 🔵 Needs a closer look.
+// 🔴 is the do-not-merge assessment; the heading text is the label when it appears.
+const COPILOT_ASSESSMENT_LABELS = {
+  'approval recommended': { tone: 'approved', label: 'Approval recommended' },
+  approved: { tone: 'approved', label: 'Approved' },
+  'changes recommended': { tone: 'changes', label: 'Changes recommended' },
+  'needs a closer look': { tone: 'closer-look', label: 'Needs a closer look' },
+};
+const COPILOT_ASSESSMENT_EMOJI = {
+  '🟢': 'approved',
+  '✅': 'approved',
+  '🟡': 'changes',
+  '🔵': 'closer-look',
+  '🔴': 'blocked',
+};
+
+const escapeAttr = (value) => String(value)
+  .replace(/&/g, '&amp;')
+  .replace(/"/g, '&quot;')
+  .replace(/</g, '&lt;');
+
+const parseCopilotAssessment = (body) => {
+  if (!body) return null;
+  const headingMatch = body.match(/^###[ \t]+(?:(🟢|🟡|🔵|🔴|✅)\uFE0F?[ \t]+)?(?:\*\*)?(.+?)(?:\*\*)?[ \t]*$/m);
+  if (!headingMatch) return null;
+  const emoji = headingMatch[1] || '';
+  const rawLabel = headingMatch[2].replace(/[*_`]/g, '').trim();
+  const known = COPILOT_ASSESSMENT_LABELS[rawLabel.toLowerCase()];
+  const tone = known?.tone || COPILOT_ASSESSMENT_EMOJI[emoji];
+  if (!tone) return null;
+
+  const after = body.slice((headingMatch.index || 0) + headingMatch[0].length);
+  const paragraph = [];
+  for (const rawLine of after.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      if (paragraph.length) break;
+      continue;
+    }
+    if (/^\*Get a fresh assessment/i.test(line)) continue;
+    if (line.startsWith('#') || line.startsWith('<') || line.startsWith('|') || line === '---') break;
+    if (/^\*\*(Review effort|Findings)\*\*/i.test(line)) break;
+    paragraph.push(line);
+  }
+
+  return {
+    tone,
+    label: known?.label || rawLabel,
+    summary: paragraph.join(' ').replace(/\s+/g, ' '),
+  };
+};
+
+const collectCopilotAssessments = (recentReviews) => {
+  const byAuthor = {};
+  const nodes = [...(recentReviews?.nodes || [])].sort(
+    (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+  );
+  nodes.forEach((review) => {
+    if (!isCopilotLogin(review.author)) return;
+    const assessment = parseCopilotAssessment(review.body);
+    if (assessment) byAuthor[getActorLogin(review.author)] = assessment;
+  });
+  return byAuthor;
+};
+
+const copilotAssessmentForEvent = (event) => {
+  if (event.copilotAssessment) return event.copilotAssessment;
+  if (event.state === 'APPROVED') return { tone: 'approved', label: 'Approved', summary: '' };
+  if (event.state === 'CHANGES_REQUESTED') return { tone: 'changes', label: 'Changes requested', summary: '' };
+  return null;
+};
+
+const formatCopilotEvent = (event) => {
+  const assessment = copilotAssessmentForEvent(event);
+  const countBadge = (event.count ?? 1) > 1 ? `(${event.count})` : '';
+  const authorWithCount = `${event.author}${countBadge}`;
+  const tooltip = assessment
+    ? (assessment.summary ? `${assessment.label}: ${assessment.summary}` : assessment.label)
+    : `${authorWithCount} commented at ${event.createdAt.toLocaleString()}`;
+  const toneClass = assessment ? ` copilot-${assessment.tone}` : '';
+  return `<span class="copilot${toneClass}" title="${escapeAttr(tooltip)}">${ICONS.copilot}</span>`;
 };
 
 const isGitHubActionsLogin = (author) => {
@@ -1133,6 +1217,9 @@ const parseDatesInPR = (pr) => {
   if (pr.committedDate) pr.committedDate = new Date(pr.committedDate);
   pr.reviews?.nodes?.forEach((review) => { review.createdAt = new Date(review.createdAt); });
   pr.comments?.nodes?.forEach((comment) => { comment.createdAt = new Date(comment.createdAt); });
+  const copilotAssessments = collectCopilotAssessments(pr.recentReviews);
+  if (Object.keys(copilotAssessments).length) pr.copilotAssessments = copilotAssessments;
+  delete pr.recentReviews;
 };
 
 const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
@@ -1463,7 +1550,7 @@ const getEffectivePermission = (repoName, login) => {
   return null;
 };
 
-const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecision, repoName, headRefOid = null) => {
+const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecision, repoName, headRefOid = null, copilotAssessments = null) => {
   const events = [];
 
   reviews?.nodes?.forEach((review) => {
@@ -1561,6 +1648,13 @@ const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecis
       ev.hasNewerCommits = false;
     }
   });
+
+  if (copilotAssessments) {
+    compressedEvents.forEach((ev) => {
+      const assessment = copilotAssessments[ev.author];
+      if (assessment) ev.copilotAssessment = assessment;
+    });
+  }
 
   return compressedEvents;
 };
@@ -1883,7 +1977,7 @@ const getPRPresentation = (pr, {
   let eventsLengthForSignature = 0;
 
   if (showActivity) {
-    const events = combineReviewsAndComments(reviews, comments, latestReviews, reviewDecision, repository.name, headRefOid);
+    const events = combineReviewsAndComments(reviews, comments, latestReviews, reviewDecision, repository.name, headRefOid, pr.copilotAssessments);
 
     const regularEvents = [];
     let sonarEvent = null;
@@ -1916,11 +2010,7 @@ const getPRPresentation = (pr, {
         const tooltip = `${authorWithCount} commented at ${formattedDate}`;
         return `<span class="github" title="${tooltip}">${ICONS.github}</span>`;
       } else if (isCopilotLogin(event.author)) {
-        const countBadge = (event.count ?? 1) > 1 ? `(${event.count})` : '';
-        const authorWithCount = `${event.author}${countBadge}`;
-        const formattedDate = event.createdAt.toLocaleString();
-        const tooltip = `${authorWithCount} commented at ${formattedDate}`;
-        return `<span class="copilot" title="${tooltip}">${ICONS.copilot}</span>`;
+        return formatCopilotEvent(event);
       } else {
         return TimelineEvent({ ...event, key: eventIndex });
       }
@@ -1942,7 +2032,10 @@ const getPRPresentation = (pr, {
         : '';
       const dnc = e.approvalDoesNotCount ? 'X' : '';
       const newer = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED') && e.hasNewerCommits ? 'c' : '';
-      return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}${priv ? ':' + priv : ''}${dnc ? ':' + dnc : ''}${newer ? ':' + newer : ''}`;
+      const copilotSig = e.copilotAssessment
+        ? `:${e.copilotAssessment.tone}:${(e.copilotAssessment.summary || '').slice(0, 96).replace(/[|,:]/g, ' ')}`
+        : '';
+      return `${e.author}:${e.state}:${e.count||1}${flag ? ':' + flag : ''}${priv ? ':' + priv : ''}${dnc ? ':' + dnc : ''}${newer ? ':' + newer : ''}${copilotSig}`;
     }).join(',')}|act:${activityOnSeparateLine ? 'b' : 'i'}|tail:${showActivity ? '1' : '0'}`,
     ageMarkup,
     ageClass,
