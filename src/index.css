@@ -613,6 +613,20 @@ a {
   line-height: 1.4;
 }
 
+.pr-draft {
+  display: inline-block;
+  padding: 0 4px;
+  background-color: #3d3422;
+  color: #d7ba7d;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pr-empty {
+  color: #8a8a6f;
+  padding: 4px 0;
+}
+
 .view {
   display: block;
 }

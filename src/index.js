@@ -15,6 +15,7 @@ const STORAGE_KEYS = {
   recentPRsSinceDate: 'PR_RADIATOR_RECENT_PRS_SINCE_DATE',
   activityOnSeparateLine: 'PR_RADIATOR_ACTIVITY_SEPARATE_LINE',
   notifyNewPRs: 'PR_RADIATOR_NOTIFY_NEW_PRS',
+  myOpenPRs: 'PR_RADIATOR_MY_OPEN_PRS',
 };
 
 const GRAPHQL_REPO_BATCH_SIZE = 2;
@@ -26,6 +27,9 @@ const TEAM_MEMBERS_CACHE_TTL_MS = 60 * 60 * 1000;
 const COLLABORATOR_PERMISSION_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const COLLABORATOR_PERMISSION_LOOKUPS_PER_QUERY = 30;
 const EXTERNAL_MERGES_SEARCH_BATCH_SIZE = 10;
+const MINE_PAGE_SIZE = 100;
+const MINE_MAX_PAGES = 3;
+const HYDRATION_PR_CHUNK = 10;
 /** Skip opportunistic refreshes (focus, poll, view switch) if this view fetched recently. */
 const VIEW_FETCH_COOLDOWN_MS = 10_000;
 
@@ -38,17 +42,20 @@ const FETCH_STATE_KEYS = {
   recent: 'isFetchingRecentPRs',
   shortlog: 'isFetchingShortlog',
   repos: 'isFetchingRepos',
+  mine: 'isFetchingMyPRs',
 };
 const activeFetches = {
   open: { controller: null, generation: 0 },
   recent: { controller: null, generation: 0 },
   shortlog: { controller: null, generation: 0 },
   repos: { controller: null, generation: 0 },
+  mine: { controller: null, generation: 0 },
 };
 const lastViewFetchAt = {
   open: 0,
   recent: 0,
   shortlog: 0,
+  mine: 0,
 };
 let progressDepth = 0;
 
@@ -102,6 +109,7 @@ const shouldLogGraphQLCost = () => window.location.hostname === 'localhost'
 const formatTiming = (ms) => `${Math.round(ms)}ms`;
 const GRAPHQL_ALIAS_CHARS = 'abcdefghijklmnopqrstuvwxyz';
 const getShortGraphQLAlias = (index) => GRAPHQL_ALIAS_CHARS[index] || `a${index.toString(36)}`;
+const escapeGraphQLString = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
 const parseTeamInput = (value) => dedupeStrings(
   value
@@ -151,7 +159,7 @@ const getNotifyScopeKey = () => {
   const { owner, ignoreRepos } = state.config;
   const team = state.activeTeamSlug || '';
   const ignore = [...ignoreRepos].sort().join(',');
-  return `${owner}|${team}|${ignore}|dep:${state.showDependabotPRs ? 1 : 0}|nr:${state.showNeedsReviewPRs ? 1 : 0}`;
+  return `${owner}|${team}|${ignore}|dep:${state.showDependabotPRs ? 1 : 0}|nr:${state.showNeedsReviewPRs ? 1 : 0}|draft:${state.showDrafts ? 1 : 0}`;
 };
 
 /** Open-list filters (team, ignore, dependabot, needs-review) — not gated on current view. */
@@ -164,6 +172,7 @@ const filterOpenDisplayPRs = (prs) => {
   const displayPRs = [];
 
   prs.forEach((pr) => {
+    if (!state.showDrafts && pr.isDraft) return;
     if (!pr.teamSlugs?.some((slug) => visibleTeamSlugs.has(slug))) return;
     if (ignoredRepos.has(pr.repository.name)) return;
     if (hideDependabot && getActorLogin(pr.author, '') === 'dependabot') return;
@@ -173,6 +182,20 @@ const filterOpenDisplayPRs = (prs) => {
 
   return displayPRs;
 };
+
+/** Personal open list: authored-by-viewer rows already scoped by the mine query. */
+const filterMineDisplayPRs = (prs) => {
+  const needsReviewOnly = state.showNeedsReviewPRs;
+  const displayPRs = [];
+  prs.forEach((pr) => {
+    if (!state.showDrafts && pr.isDraft) return;
+    if (needsReviewOnly && pr.reviewDecision !== 'REVIEW_REQUIRED' && pr.reviewDecision !== null) return;
+    displayPRs.push(pr);
+  });
+  return displayPRs;
+};
+
+const isShowingMine = () => state.showMyPRs && !state.showRecentPRs && !state.showRepoLinks && !state.showShortlog;
 
 const baselineOpenPrUrls = (prs = state.PRs) => {
   const filtered = filterOpenDisplayPRs(prs);
@@ -428,14 +451,23 @@ const buildRecentQuery = (owner, repos, sinceDateTime) => {
   return `${fragmentPart} query{${graphqlCostFragment} ${batchedRepos}}`;
 };
 
-const buildHydrationQuery = (owner, repoRequests) => {
-  const batchedRepos = repoRequests.map(({ repoName, numbers }, repoIndex) => {
+const buildHydrationQuery = (fallbackOwner, repoRequests) => {
+  const batchedRepos = repoRequests.map(({ repoName, numbers, owner }, repoIndex) => {
+    const repoOwner = escapeGraphQLString(owner || fallbackOwner);
+    const safeRepo = escapeGraphQLString(repoName);
     const prQueries = numbers
-      .map((number, prIndex) => `${getShortGraphQLAlias(prIndex)}:pullRequest(number:${number}){${openPRHydrationFields}}`)
+      .map((number, prIndex) => `${getShortGraphQLAlias(prIndex)}:pullRequest(number:${Number(number)}){${openPRHydrationFields}}`)
       .join(' ');
-    return `${getShortGraphQLAlias(repoIndex)}:repository(owner:"${owner}",name:"${repoName}"){${prQueries}}`;
+    return `${getShortGraphQLAlias(repoIndex)}:repository(owner:"${repoOwner}",name:"${safeRepo}"){${prQueries}}`;
   }).join(' ');
   return `query{${graphqlCostFragment} ${batchedRepos}}`;
+};
+
+const mineListFields = 'number title url isDraft createdAt updatedAt baseRefName headRefOid mergeable reviewDecision author{login} repository{name owner{login}} commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}';
+
+const buildMineListQuery = (after = null) => {
+  const afterArg = after ? `,after:"${escapeGraphQLString(after)}"` : '';
+  return `query{${graphqlCostFragment} viewer{login pullRequests(states:[OPEN],first:${MINE_PAGE_SIZE},orderBy:{field:UPDATED_AT,direction:DESC}${afterArg}){pageInfo{hasNextPage endCursor}nodes{${mineListFields}}}}}`;
 };
 
 const TeamMembersQuery = (owner, team, after = null) => {
@@ -488,10 +520,10 @@ const api = {
       repos: chunk,
     })));
   },
-  fetchHydrationBatches: async (token, owner, repoRequests, signal) => {
+  fetchHydrationBatches: async (token, owner, repoRequests, signal, type = 'open-hydrate') => {
     const chunks = chunkArray(repoRequests, GRAPHQL_REPO_BATCH_SIZE);
     return Promise.all(chunks.map(async (chunk) => ({
-      payload: await api.fetchGraphQL(token, buildHydrationQuery(owner, chunk), { type: 'open-hydrate', signal }),
+      payload: await api.fetchGraphQL(token, buildHydrationQuery(owner, chunk), { type, signal }),
       repoRequests: chunk,
     })));
   },
@@ -917,6 +949,8 @@ const collectPermissionLookups = (prs) => {
     if (shouldHideDependabotPRs() && getActorLogin(pr?.author, '') === 'dependabot') return;
     const repoName = pr?.repository?.name;
     if (!repoName) return;
+    const repoOwner = pr?.repository?.owner?.login || state.config.owner || '';
+    const cacheKey = permissionCacheKey(repoName, repoOwner);
     const reviewers = new Set();
     pr.latestReviews?.nodes?.forEach((r) => {
       const state = r?.state;
@@ -931,12 +965,12 @@ const collectPermissionLookups = (prs) => {
       if (login) reviewers.add(login);
     });
     reviewers.forEach((login) => {
-      const dedupeKey = `${repoName}::${login.toLowerCase()}`;
+      const dedupeKey = `${cacheKey}::${login.toLowerCase()}`;
       if (seen.has(dedupeKey)) return;
       seen.add(dedupeKey);
-      const cached = getCachedPermission(repoName, login);
+      const cached = getCachedPermission(cacheKey, login);
       if (isPermissionEntryFresh(cached, now)) return;
-      lookups.push({ repoName, login });
+      lookups.push({ repoName, login, repoOwner, cacheKey });
     });
   });
   return lookups;
@@ -945,9 +979,17 @@ const collectPermissionLookups = (prs) => {
 const fetchCollaboratorPermissions = async (token, owner, lookups) => {
   if (lookups.length === 0) return;
   const now = Date.now();
-  const chunks = chunkArray(lookups, COLLABORATOR_PERMISSION_LOOKUPS_PER_QUERY);
+  const byOwner = new Map();
+  lookups.forEach((lookup) => {
+    const repoOwner = lookup.repoOwner || owner;
+    const list = byOwner.get(repoOwner) || [];
+    list.push(lookup);
+    byOwner.set(repoOwner, list);
+  });
 
-  await Promise.all(chunks.map(async (chunk) => {
+  await Promise.all([...byOwner.entries()].map(async ([repoOwner, ownerLookups]) => {
+    const chunks = chunkArray(ownerLookups, COLLABORATOR_PERMISSION_LOOKUPS_PER_QUERY);
+    await Promise.all(chunks.map(async (chunk) => {
     const lookupsByRepo = new Map();
     chunk.forEach(({ repoName, login }) => {
       const list = lookupsByRepo.get(repoName) || [];
@@ -955,7 +997,7 @@ const fetchCollaboratorPermissions = async (token, owner, lookups) => {
       lookupsByRepo.set(repoName, list);
     });
 
-    const query = buildCollaboratorPermissionsQuery(owner, lookupsByRepo);
+    const query = buildCollaboratorPermissionsQuery(repoOwner, lookupsByRepo);
 
     let payload;
     try {
@@ -975,9 +1017,10 @@ const fetchCollaboratorPermissions = async (token, owner, lookups) => {
         const lowerLogin = login.toLowerCase();
         const matched = edges.find((edge) => (edge?.node?.login || '').toLowerCase() === lowerLogin);
         const permission = matched?.permission || 'NONE';
-        setCachedPermission(repoName, login, permission, now);
+        setCachedPermission(permissionCacheKey(repoName, repoOwner), login, permission, now);
       });
     });
+    }));
   }));
 
   persistPermissionCache();
@@ -991,7 +1034,7 @@ const ensureCollaboratorPermissionsLoaded = async (prs) => {
   if (lookups.length === 0) return;
 
   const pendingKey = lookups
-    .map(({ repoName, login }) => `${repoName}::${login.toLowerCase()}`)
+    .map(({ cacheKey, repoName, login }) => `${cacheKey || repoName}::${login.toLowerCase()}`)
     .sort()
     .join('|');
   if (pendingPermissionLookups === pendingKey) return;
@@ -1166,15 +1209,15 @@ const needsHydration = (cachedPR, discoveredUpdatedAt, discoveredCommitConclusio
   return false;
 };
 
-const hydrateOpenPRs = async (token, owner, repoRequests, signal) => {
+const hydrateOpenPRs = async (token, owner, repoRequests, signal, type = 'open-hydrate') => {
   if (repoRequests.length === 0) return [];
 
-  const results = await api.fetchHydrationBatches(token, owner, repoRequests, signal);
+  const results = await api.fetchHydrationBatches(token, owner, repoRequests, signal, type);
   const hydratedPRs = [];
 
   results.forEach(({ payload, repoRequests: repoChunk }) => {
     const repoDataMap = payload?.data || {};
-    repoChunk.forEach(({ repoName }, index) => {
+    repoChunk.forEach(({ repoName, owner: repoOwner }, index) => {
       const repoAlias = getShortGraphQLAlias(index);
       const repoData = repoDataMap[repoAlias];
       if (!repoData) return;
@@ -1182,7 +1225,7 @@ const hydrateOpenPRs = async (token, owner, repoRequests, signal) => {
       Object.keys(repoData).forEach((key) => {
         const val = repoData[key];
         if (!val || typeof val !== 'object' || val.number == null) return;
-        hydratedPRs.push(decoratePullRequest(val, repoName));
+        hydratedPRs.push(decoratePullRequest(val, repoName, repoOwner || owner));
       });
     });
   });
@@ -1192,11 +1235,18 @@ const hydrateOpenPRs = async (token, owner, repoRequests, signal) => {
 
 
 
-const decoratePullRequest = (pr, repoName) => ({
-  ...pr,
-  repository: { name: repoName },
-  teamSlugs: getRepoTeamSlugs(repoName),
-});
+const decoratePullRequest = (pr, repoName, repoOwner = null) => {
+  const ownerLogin = repoOwner || pr.repository?.owner?.login || state.config.owner || '';
+  const inConfiguredOrg = !state.config.owner || ownerLogin === state.config.owner;
+  return {
+    ...pr,
+    repository: {
+      name: repoName,
+      ...(ownerLogin ? { owner: { login: ownerLogin } } : {}),
+    },
+    teamSlugs: inConfiguredOrg ? getRepoTeamSlugs(repoName) : [],
+  };
+};
 
 const mergePullRequestCache = (existingPRs, fetchedPRs, targetRepos, sortFn) => {
   const targetRepoSet = new Set(targetRepos);
@@ -1295,6 +1345,7 @@ const fetchRecentPRs = async (token, owner, repos, ignoreRepos, options = {}) =>
 };
 
 const knownDraftTimestamps = new Map();
+const discoveredDraftStubs = new Map();
 
 const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
   ensureTeamMembersLoaded();
@@ -1350,8 +1401,19 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
       const key = prCacheKey(pr.repoName, pr.number);
       const cachedPR = cachedPRsByKey.get(key);
 
-      if (knownDraftTimestamps.get(key) === pr.updatedAt?.getTime()) {
-        return;
+      if (knownDraftTimestamps.get(key) === (pr.updatedAt?.getTime() || 0)) {
+        discoveredDraftStubs.set(key, {
+          repoName: pr.repoName,
+          number: pr.number,
+          updatedAt: pr.updatedAt,
+          commitConclusion: pr.commitConclusion,
+          mergeable: pr.mergeable,
+        });
+        if (cachedPR?.isDraft) {
+          unchangedPRsByKey.set(key, cachedPR);
+          return;
+        }
+        if (!state.showDrafts) return;
       }
 
       if (!needsHydration(cachedPR, pr.updatedAt, pr.commitConclusion, pr.mergeable)) {
@@ -1381,9 +1443,17 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
       const key = prCacheKey(pr.repository.name, pr.number);
       if (pr.isDraft) {
         knownDraftTimestamps.set(key, pr.updatedAt?.getTime() || 0);
+        discoveredDraftStubs.set(key, {
+          repoName: pr.repository.name,
+          number: pr.number,
+          updatedAt: pr.updatedAt,
+          commitConclusion: getCommitConclusion(pr.headRefOid, pr.commits),
+          mergeable: pr.mergeable || null,
+        });
         return;
       }
       knownDraftTimestamps.delete(key);
+      discoveredDraftStubs.delete(key);
     });
 
     const hydratedByKey = new Map(
@@ -1395,7 +1465,7 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
         const key = prCacheKey(pr.repoName, pr.number);
         return hydratedByKey.get(key) || unchangedPRsByKey.get(key);
       })
-      .filter((pr) => pr && !pr.isDraft)
+      .filter(Boolean)
       .sort(sortByCreatedAt);
 
     const transformCompletedAt = performance.now();
@@ -1433,15 +1503,307 @@ const fetchOpenPRs = async (token, owner, repos, ignoreRepos, options = {}) => {
   }
 };
 
+const minePrKey = (pr) => `${pr?.repository?.owner?.login || ''}/${pr?.repository?.name || ''}#${pr?.number}`;
+
+const permissionCacheKey = (repoName, repoOwner = null) => {
+  const configured = state.config?.owner || '';
+  if (repoOwner && configured && repoOwner !== configured) return `${repoOwner}/${repoName}`;
+  return repoName;
+};
+
+const expandHydrationRequests = (requests) => requests.flatMap(({ owner, repoName, numbers }) => (
+  chunkArray(numbers, HYDRATION_PR_CHUNK).map((numberChunk) => ({
+    owner,
+    repoName,
+    numbers: numberChunk,
+  }))
+));
+
+const reviveStoredPR = (pr) => {
+  if (!pr || typeof pr !== 'object' || pr.number == null || !pr.url) return null;
+  const copy = {
+    ...pr,
+    repository: pr.repository ? { ...pr.repository, owner: pr.repository.owner ? { ...pr.repository.owner } : undefined } : undefined,
+    reviews: pr.reviews?.nodes ? { nodes: pr.reviews.nodes.map((node) => ({ ...node })) } : pr.reviews,
+    comments: pr.comments?.nodes ? { nodes: pr.comments.nodes.map((node) => ({ ...node })) } : pr.comments,
+    latestReviews: pr.latestReviews?.nodes ? { nodes: pr.latestReviews.nodes.map((node) => ({ ...node })) } : pr.latestReviews,
+    commits: pr.commits?.nodes ? { nodes: pr.commits.nodes.map((node) => ({ ...node, commit: node.commit ? { ...node.commit } : node.commit })) } : pr.commits,
+  };
+  parseDatesInPR(copy);
+  if (!(copy.createdAt instanceof Date) || Number.isNaN(copy.createdAt.getTime())) return null;
+  return copy;
+};
+
+const loadMyOpenPRsCache = () => {
+  try {
+    const raw = parseStoredJSON(STORAGE_KEYS.myOpenPRs, null);
+    if (!raw || typeof raw !== 'object') return { login: null, fetchedAt: 0, prs: [] };
+    const prs = Array.isArray(raw.prs) ? raw.prs.map(reviveStoredPR).filter(Boolean) : [];
+    return {
+      login: typeof raw.login === 'string' ? raw.login : null,
+      fetchedAt: Number(raw.fetchedAt) || 0,
+      prs,
+    };
+  } catch (error) {
+    console.warn('Failed to load mine PR cache', error);
+    return { login: null, fetchedAt: 0, prs: [] };
+  }
+};
+
+const persistMyOpenPRsCache = (login, prs) => {
+  try {
+    localStorage.setItem(STORAGE_KEYS.myOpenPRs, JSON.stringify({
+      login: login || null,
+      fetchedAt: Date.now(),
+      prs,
+    }));
+  } catch (error) {
+    console.warn('Failed to persist mine PR cache', error);
+  }
+};
+
+const clearMyOpenPRsCache = () => {
+  localStorage.removeItem(STORAGE_KEYS.myOpenPRs);
+};
+
+const normalizeMineNodes = (nodes, login) => {
+  const loginLower = (login || '').toLowerCase();
+  if (!loginLower) return [];
+  const prs = [];
+  nodes.forEach((node) => {
+    if (!node || node.number == null) return;
+    const authorLogin = node.author?.login || '';
+    if (authorLogin.toLowerCase() !== loginLower) return;
+    const repoName = node.repository?.name;
+    const repoOwner = node.repository?.owner?.login;
+    if (!repoName || !repoOwner) return;
+    const pr = decoratePullRequest(node, repoName, repoOwner);
+    parseDatesInPR(pr);
+    if (!(pr.createdAt instanceof Date) || Number.isNaN(pr.createdAt.getTime())) return;
+    prs.push(pr);
+  });
+  return prs;
+};
+
+const mineNeedsHydration = (cached, listed) => {
+  if (!cached?.reviews || !cached?.latestReviews) return true;
+  const conclusion = listed.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state || null;
+  return needsHydration(cached, listed.updatedAt, conclusion, listed.mergeable || null);
+};
+
+const overlayMineCache = (listed, cachedPRs) => {
+  const cachedByKey = new Map(cachedPRs.map((pr) => [minePrKey(pr), pr]));
+  return listed
+    .map((pr) => {
+      const cached = cachedByKey.get(minePrKey(pr));
+      if (cached && !mineNeedsHydration(cached, pr)) return cached;
+      return pr;
+    })
+    .sort(sortByCreatedAt);
+};
+
+const collectMineHydrationRequests = (listed, painted) => {
+  const paintedByKey = new Map(painted.map((pr) => [minePrKey(pr), pr]));
+  const byRepo = new Map();
+  listed.forEach((pr) => {
+    const paintedPR = paintedByKey.get(minePrKey(pr));
+    if (paintedPR && !mineNeedsHydration(paintedPR, pr)) return;
+    const repoOwner = pr.repository.owner.login;
+    const repoName = pr.repository.name;
+    const groupKey = `${repoOwner}/${repoName}`;
+    const group = byRepo.get(groupKey) || { owner: repoOwner, repoName, numbers: [] };
+    group.numbers.push(pr.number);
+    byRepo.set(groupKey, group);
+  });
+  return expandHydrationRequests([...byRepo.values()]);
+};
+
+const previewMineFromOpenPRs = () => {
+  const login = (currentViewerLogin || '').toLowerCase();
+  if (!login) return [];
+  return state.PRs.filter((pr) => {
+    if (getActorLogin(pr.author, '').toLowerCase() !== login) return false;
+    if (!state.showDrafts && pr.isDraft) return false;
+    return true;
+  });
+};
+
+const fetchMyOpenPRs = async (options = {}) => {
+  const { force = false } = options;
+  const token = options.token || state.config.token;
+  if (!token) return;
+  if (shouldPauseGitHubRefresh()) {
+    renderRepoRefreshStatus();
+    return;
+  }
+  if (!force && (state.isFetchingMyPRs || isViewFetchFresh('mine'))) return;
+
+  const refreshStartedAt = performance.now();
+  const fetch = beginFetch('mine');
+  try {
+    const listed = [];
+    let after = null;
+    let login = currentViewerLogin;
+    let pagesFetched = 0;
+    let listCompletedAt = refreshStartedAt;
+
+    for (let page = 0; page < MINE_MAX_PAGES; page += 1) {
+      const payload = await api.fetchGraphQL(token, buildMineListQuery(after), { type: 'mine-list', signal: fetch.signal });
+      if (!fetch.isCurrent()) return;
+      const viewer = payload?.data?.viewer;
+      if (!viewer) {
+        throw new Error('Mine query returned no viewer');
+      }
+      if (viewer.login) {
+        login = viewer.login;
+        currentViewerLogin = viewer.login;
+      }
+      if (!login) {
+        throw new Error('Mine query returned no viewer login');
+      }
+      const connection = viewer.pullRequests;
+      listed.push(...normalizeMineNodes(connection?.nodes || [], login));
+      pagesFetched += 1;
+      if (page === 0 && fetch.isCurrent()) {
+        const painted = overlayMineCache(listed, state.myOpenPRs);
+        setState({ myOpenPRs: painted });
+        persistMyOpenPRsCache(login, painted);
+      }
+      listCompletedAt = performance.now();
+      if (!connection?.pageInfo?.hasNextPage || !connection.pageInfo.endCursor) break;
+      if (page === MINE_MAX_PAGES - 1) {
+        console.warn(`Mine list truncated at ${MINE_PAGE_SIZE * MINE_MAX_PAGES} open PRs`);
+        break;
+      }
+      after = connection.pageInfo.endCursor;
+    }
+
+    if (!fetch.isCurrent()) return;
+    const preHydrate = overlayMineCache(listed, state.myOpenPRs);
+    if (pagesFetched > 1) {
+      setState({ myOpenPRs: preHydrate });
+      persistMyOpenPRsCache(login, preHydrate);
+    }
+
+    const listedByKey = new Map(listed.map((pr) => [minePrKey(pr), pr]));
+    const hydrateRequests = collectMineHydrationRequests(listed, preHydrate);
+    const nonDraftRequests = [];
+    const draftRequests = [];
+    hydrateRequests.forEach((request) => {
+      const nonDraftNumbers = [];
+      const draftNumbers = [];
+      request.numbers.forEach((number) => {
+        const listedPR = listedByKey.get(`${request.owner}/${request.repoName}#${number}`);
+        if (listedPR?.isDraft) draftNumbers.push(number);
+        else nonDraftNumbers.push(number);
+      });
+      if (nonDraftNumbers.length) nonDraftRequests.push({ ...request, numbers: nonDraftNumbers });
+      if (draftNumbers.length) draftRequests.push({ ...request, numbers: draftNumbers });
+    });
+
+    const mergeHydrated = (basePRs, hydrated) => {
+      const hydratedByKey = new Map(hydrated.map((pr) => [minePrKey(pr), pr]));
+      const baseByKey = new Map(basePRs.map((pr) => [minePrKey(pr), pr]));
+      return listed
+        .map((pr) => hydratedByKey.get(minePrKey(pr)) || baseByKey.get(minePrKey(pr)) || pr)
+        .sort(sortByCreatedAt);
+    };
+
+    const hydratedNonDrafts = nonDraftRequests.length
+      ? await hydrateOpenPRs(token, state.config.owner, nonDraftRequests, fetch.signal, 'mine-hydrate')
+      : [];
+    if (!fetch.isCurrent()) return;
+    hydratedNonDrafts.forEach(parseDatesInPR);
+    const afterNonDrafts = mergeHydrated(preHydrate, hydratedNonDrafts);
+    if (hydratedNonDrafts.length && fetch.isCurrent()) {
+      setState({ myOpenPRs: afterNonDrafts });
+      persistMyOpenPRsCache(login, afterNonDrafts);
+    }
+
+    const hydratedDrafts = draftRequests.length
+      ? await hydrateOpenPRs(token, state.config.owner, draftRequests, fetch.signal, 'mine-hydrate')
+      : [];
+    if (!fetch.isCurrent()) return;
+    hydratedDrafts.forEach(parseDatesInPR);
+    const hydratedPRs = [...hydratedNonDrafts, ...hydratedDrafts];
+    const finalPRs = mergeHydrated(afterNonDrafts, hydratedDrafts);
+    const hydrateCompletedAt = performance.now();
+
+    setState({ myOpenPRs: finalPRs });
+    persistMyOpenPRsCache(login, finalPRs);
+    ensureCollaboratorPermissionsLoaded(finalPRs)
+      .then(() => {
+        if (fetch.isCurrent()) render();
+      })
+      .catch((error) => {
+        console.error('Permission lookup failed:', error);
+      });
+
+    if (shouldLogGraphQLCost()) {
+      console.log(
+        `[PR refresh mine] total: ${formatTiming(performance.now() - refreshStartedAt)} | list: ${formatTiming(listCompletedAt - refreshStartedAt)} | hydrate: ${formatTiming(hydrateCompletedAt - listCompletedAt)} | prs: ${finalPRs.length} | hydrated: ${hydratedPRs.length}`
+      );
+    }
+  } catch (error) {
+    if (!isAbortError(error)) {
+      console.log('Failed to fetch your PRs', error);
+    }
+  } finally {
+    finishFetch('mine', fetch.generation);
+  }
+};
+
+const ensureOpenDraftsHydrated = async () => {
+  const { token, owner } = state.config;
+  if (!token || !owner || discoveredDraftStubs.size === 0) return;
+  const byRepo = new Map();
+  discoveredDraftStubs.forEach((stub, key) => {
+    const cached = state.PRs.find((pr) => prCacheKey(pr.repository?.name, pr.number) === key);
+    if (cached?.isDraft && cached.updatedAt?.getTime() === stub.updatedAt?.getTime()) return;
+    const numbers = byRepo.get(stub.repoName) || [];
+    numbers.push(stub.number);
+    byRepo.set(stub.repoName, numbers);
+  });
+  if (byRepo.size === 0) return;
+  const repoRequests = expandHydrationRequests([...byRepo.entries()].map(([repoName, numbers]) => ({
+    repoName,
+    numbers,
+    owner,
+  })));
+  const hydrated = await hydrateOpenPRs(token, owner, repoRequests, undefined, 'open-hydrate');
+  hydrated.forEach(parseDatesInPR);
+  if (!state.showDrafts) return;
+  const byUrl = new Map(state.PRs.map((pr) => [pr.url, pr]));
+  hydrated.forEach((pr) => {
+    if (!pr?.url || !pr.isDraft) return;
+    const key = prCacheKey(pr.repository.name, pr.number);
+    knownDraftTimestamps.set(key, pr.updatedAt?.getTime() || 0);
+    byUrl.set(pr.url, pr);
+  });
+  setState({ PRs: [...byUrl.values()].sort(sortByCreatedAt) });
+};
+
 const refreshCurrentView = async (options = {}) => {
   const { merge = Boolean(state.activeTeamSlug), force = false } = options;
   const config = options.configOverride || state.config;
   const activeTeamSlug = options.activeTeamSlugOverride ?? state.activeTeamSlug;
   const { token, owner, ignoreRepos } = config;
   const repos = options.reposOverride || getVisibleRepos(config, activeTeamSlug);
+  const list = options.list || (
+    state.showRepoLinks ? 'repos'
+      : state.showShortlog ? 'shortlog'
+        : state.showRecentPRs ? 'recent'
+          : state.showMyPRs ? 'mine'
+            : 'open'
+  );
 
   if (token) {
     fetchViewerLogin(token).catch(() => {});
+  }
+
+  if (list === 'repos') {
+    render();
+    return;
   }
 
   if (!token || !owner) return;
@@ -1450,20 +1812,21 @@ const refreshCurrentView = async (options = {}) => {
     return;
   }
 
-  if (state.showRepoLinks) {
-    render();
-    return;
-  }
-
-  if (state.showShortlog) {
+  if (list === 'shortlog') {
     if (!force && isViewFetchFresh('shortlog')) return;
     await fetchShortlog({ force });
     return;
   }
 
-  if (state.showRecentPRs) {
+  if (list === 'recent') {
     if (!force && isViewFetchFresh('recent')) return;
     await fetchRecentPRs(token, owner, repos, ignoreRepos, { merge });
+    return;
+  }
+
+  if (list === 'mine') {
+    if (!force && isViewFetchFresh('mine')) return;
+    await fetchMyOpenPRs({ force, token });
     return;
   }
 
@@ -1544,13 +1907,13 @@ const ICONS = {
   github: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="1em" height="1em" class="event-icon" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>`,
 };
 
-const getEffectivePermission = (repoName, login) => {
-  const cached = getCachedPermission(repoName, login);
+const getEffectivePermission = (repoName, login, repoOwner = null) => {
+  const cached = getCachedPermission(permissionCacheKey(repoName, repoOwner), login);
   if (cached) return cached.permission;
   return null;
 };
 
-const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecision, repoName, headRefOid = null, copilotAssessments = null) => {
+const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecision, repoName, headRefOid = null, copilotAssessments = null, repoOwner = null) => {
   const events = [];
 
   reviews?.nodes?.forEach((review) => {
@@ -1604,7 +1967,7 @@ const combineReviewsAndComments = (reviews, comments, latestReviews, reviewDecis
       const latest = latestByAuthor.get(ev.author);
       ev.isActive = !!latest && latest.state === ev.state;
       const association = latest?.authorAssociation || ev.authorAssociation;
-      const permission = getEffectivePermission(repoName, ev.author);
+      const permission = getEffectivePermission(repoName, ev.author, repoOwner);
       if (permission) {
         ev.isPrivileged = isPrivilegedPermission(permission);
         ev.permissionKnown = true;
@@ -1909,6 +2272,13 @@ const formatCompactDistanceToNow = (date) => {
   return `${years}y`;
 };
 
+const formatRepoLabel = (repository) => {
+  const name = repository?.name || 'unknown';
+  const ownerLogin = repository?.owner?.login || '';
+  if (ownerLogin && state.config.owner && ownerLogin !== state.config.owner) return `${ownerLogin}/${name}`;
+  return name;
+};
+
 const getTeamBadgesMarkup = (teamSlugs = [], showInlineTeamBadges = false, teamBadgeCache = null) => {
   let teamBadges = '';
   if (showInlineTeamBadges && teamSlugs.length > 0) {
@@ -1941,16 +2311,18 @@ const getPRPresentation = (pr, {
   const teamBadges = getTeamBadgesMarkup(teamSlugs, showInlineTeamBadges, teamBadgeCache);
   const ageMarkup = buildPRAgeMarkup(pr, isRecent);
   const author = getActorLogin(pr.author);
+  const repoLabel = formatRepoLabel(repository);
+  const draftMark = pr.isDraft ? '<span class="pr-draft">draft</span>' : '';
 
   if (isRecent) {
     const mainParts = [];
     if (teamBadges) mainParts.push(teamBadges);
     mainParts.push(author);
-    mainParts.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${number}</a>`);
+    mainParts.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">${repoLabel}#${number}</a>`);
     mainParts.push(title);
     const mainContent = mainParts.join(' ');
     return {
-      signature: `recent|${teamBadges}|${author}|${repository.name}|${number}|${title}`,
+      signature: `recent|${teamBadges}|${author}|${repoLabel}|${number}|${title}`,
       ageMarkup,
       ageClass: '',
       mainContent,
@@ -1959,13 +2331,14 @@ const getPRPresentation = (pr, {
 
   const { createdAt, reviews, comments, baseRefName, headRefOid, commits, latestReviews, reviewDecision } = pr;
   const commitState = getCommitState(headRefOid, commits, url, pr.mergeable);
-  const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repository.name}#${pr.number}</a>`;
+  const prLink = `<a href="${url}" target="_blank" rel="noopener noreferrer">${repoLabel}#${pr.number}</a>`;
   const branch = showBranch ? baseRefName : '';
   const ageClass = getAgeString(createdAt);
 
   const mainParts = [];
   if (teamBadges) mainParts.push(teamBadges);
   mainParts.push(commitState);
+  if (draftMark) mainParts.push(draftMark);
   if (branch) mainParts.push(branch);
   mainParts.push(author);
   mainParts.push(prLink);
@@ -1977,7 +2350,7 @@ const getPRPresentation = (pr, {
   let eventsLengthForSignature = 0;
 
   if (showActivity) {
-    const events = combineReviewsAndComments(reviews, comments, latestReviews, reviewDecision, repository.name, headRefOid, pr.copilotAssessments);
+    const events = combineReviewsAndComments(reviews, comments, latestReviews, reviewDecision, repository.name, headRefOid, pr.copilotAssessments, repository.owner?.login);
 
     const regularEvents = [];
     let sonarEvent = null;
@@ -2025,7 +2398,7 @@ const getPRPresentation = (pr, {
   }
 
   return {
-    signature: `open|${teamBadges}|${commitState}|${branch}|${author}|${repository.name}|${pr.number}|${title}|${reviewDecision || ''}|${eventsLengthForSignature}|${eventsForSignature.map(e => {
+    signature: `open|${teamBadges}|${commitState}|${draftMark ? 'd' : ''}|${branch}|${author}|${repoLabel}|${pr.number}|${title}|${reviewDecision || ''}|${eventsLengthForSignature}|${eventsForSignature.map(e => {
       const flag = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED') ? (e.isActive ? '1' : '0') : '';
       const priv = (e.state === 'APPROVED' || e.state === 'CHANGES_REQUESTED')
         ? (e.isPrivileged ? 'P' : 'p') + (e.permissionKnown ? 'K' : 'k')
@@ -2128,6 +2501,9 @@ const syncPRList = (listEl, displayPRs, {
   existingNodesByUrl.forEach((node) => node.remove());
 };
 
+const storedMineOpenPRs = loadMyOpenPRsCache();
+if (storedMineOpenPRs.login) currentViewerLogin = storedMineOpenPRs.login;
+
 const initialState = {
   config: {
     token: localStorage.getItem(STORAGE_KEYS.token) || '',
@@ -2138,6 +2514,7 @@ const initialState = {
     extraRepos: parseStoredJSON(STORAGE_KEYS.extraRepos, []),
   },
   PRs: [],
+  myOpenPRs: storedMineOpenPRs.prs,
   recentPRs: [],
   recentPRsSinceDate: (() => {
     const now = new Date();
@@ -2146,6 +2523,8 @@ const initialState = {
   })(),
   showDependabotPRs: false,
   showNeedsReviewPRs: false,
+  showMyPRs: false,
+  showDrafts: false,
   showRecentPRs: false,
   showRepoLinks: false,
   showShortlog: false,
@@ -2160,6 +2539,7 @@ const initialState = {
   selectedRepoIndex: -1,
   selectedPrIndex: -1,
   isFetchingOpenPRs: false,
+  isFetchingMyPRs: false,
   isFetchingRecentPRs: false,
   isFetchingRepos: false,
   githubRateLimit: {
@@ -2342,6 +2722,7 @@ const cancelFetch = (kind) => {
 
 const cancelFetchesExcept = (keepKinds = []) => {
   const keep = new Set(keepKinds);
+  keep.add('mine');
   Object.keys(activeFetches).forEach((kind) => {
     if (!keep.has(kind)) cancelFetch(kind);
   });
@@ -2445,6 +2826,11 @@ const applyConfigLocally = (nextConfig, updates = {}) => {
 };
 
 const refreshAfterConfigChange = async (nextConfig, { activeTeamSlugOverride = state.activeTeamSlug } = {}) => {
+  if (nextConfig.token) {
+    fetchMyOpenPRs({ force: true, token: nextConfig.token }).catch((error) => {
+      console.error('Error prefetching your PRs', error);
+    });
+  }
   const refreshedConfig = await refreshAllTeamRepos(nextConfig);
   await refreshCurrentView({
     configOverride: refreshedConfig,
@@ -2452,6 +2838,7 @@ const refreshAfterConfigChange = async (nextConfig, { activeTeamSlugOverride = s
     reposOverride: getVisibleRepos(refreshedConfig, activeTeamSlugOverride),
     merge: false,
     force: true,
+    list: state.showMyPRs ? 'open' : undefined,
   });
   closeSettings();
 };
@@ -2459,6 +2846,7 @@ const refreshAfterConfigChange = async (nextConfig, { activeTeamSlugOverride = s
 const applyConfig = async () => {
   const owner = ownerInput.value.trim();
   const token = tokenInput.value.trim();
+  const tokenChanged = token !== state.config.token;
   const teamSlugs = parseTeamInput(teamsInput.value);
 
   if (!owner) {
@@ -2479,6 +2867,11 @@ const applyConfig = async () => {
     repos: buildRepoMappings(teamSlugs),
   };
 
+  if (tokenChanged) {
+    cancelFetch('mine');
+    clearMyOpenPRsCache();
+    currentViewerLogin = null;
+  }
   applyConfigLocally(nextConfig, {
     activeTeamSlug: '',
     selectedRepoIndex: -1,
@@ -2486,6 +2879,7 @@ const applyConfig = async () => {
     showShortlog: false,
     shortlogData: null,
     shortlogAuthorFilter: 'external',
+    ...(tokenChanged ? { myOpenPRs: [] } : {}),
   });
 
   if (!canRefreshConfig(nextConfig)) {
@@ -2630,7 +3024,7 @@ const render = () => {
   }
   settingsForm.style.display = 'none';
 
-  if (getAllReposFromMappings(repos).length === 0) {
+  if (getAllReposFromMappings(repos).length === 0 && !isShowingMine()) {
     repoView.classList.add('hidden');
     shortlogView.classList.add('hidden');
     const loadingMessage = state.isFetchingRepos
@@ -2714,9 +3108,11 @@ const render = () => {
   repoView.classList.add('hidden');
   prView.classList.remove('hidden');
 
-  const sourcePRs = state.showRecentPRs ? state.recentPRs : state.PRs;
+  const showingMine = isShowingMine();
+  const sourcePRs = state.showRecentPRs ? state.recentPRs : showingMine ? state.myOpenPRs : state.PRs;
   // Open list (and notifications) share filterOpenDisplayPRs. Recent list only
   // applies team + ignore so dependabot/needs-review toggles stay open-view only.
+  // Mine ignores team scope and the repo ignore list.
   const displayPRs = state.showRecentPRs
     ? (() => {
       const visibleTeamSlugs = new Set(state.activeTeamSlug ? [state.activeTeamSlug] : teams);
@@ -2726,7 +3122,9 @@ const render = () => {
         && !ignoredRepos.has(pr.repository.name)
       ));
     })()
-    : filterOpenDisplayPRs(sourcePRs);
+    : showingMine
+      ? filterMineDisplayPRs(sourcePRs)
+      : filterOpenDisplayPRs(sourcePRs);
 
   renderCache.displayPRs = displayPRs;
   renderCache.mode = state.showRecentPRs ? 'recent-prs' : 'open-prs';
@@ -2734,10 +3132,12 @@ const render = () => {
   const buildSectionHeader = (title, badgeContent, prState) => {
     const summaryParts = [];
     if (prState) summaryParts.push(prState.toLowerCase());
-    if (isDependabotFilterActive()) summaryParts.push('dependabot');
+    if (showingMine) summaryParts.push(currentViewerLogin ? `mine: ${currentViewerLogin}` : 'mine');
+    if (state.showDrafts && !state.showRecentPRs) summaryParts.push('drafts');
+    if (!showingMine && isDependabotFilterActive()) summaryParts.push('dependabot');
     if (isNeedsReviewFilterActive()) summaryParts.push('awaiting review');
     if (state.notifyNewPRs) summaryParts.push('notify');
-    if (scopeLabel) summaryParts.push(scopeLabel);
+    if (!showingMine && scopeLabel) summaryParts.push(scopeLabel);
     const summaryEl = summaryParts.length > 0 ? `<span class="view-summary">— ${summaryParts.join(' | ')}</span>` : '';
     return `${title} (${badgeContent})${summaryEl ? ` ${summaryEl}` : ''}`;
   };
@@ -2775,7 +3175,7 @@ const render = () => {
   }
 
   const count = displayPRs.length;
-  const badge = state.isFetchingOpenPRs
+  const badge = (showingMine ? state.isFetchingMyPRs : state.isFetchingOpenPRs)
     ? `<span class="fetching-spinner">${ICONS.hourglass}</span>`
     : count;
   openPrHeader.innerHTML = buildSectionHeader('Pull requests', badge, 'OPEN');
@@ -2788,6 +3188,9 @@ const render = () => {
     activityOnSeparateLine: state.activityOnSeparateLine,
     showActivity: true,
   });
+  if (showingMine && count === 0 && !state.isFetchingMyPRs) {
+    openPrList.innerHTML = '<li class="pr-empty">No open pull requests authored by you.</li>';
+  }
   document.title = `(${count}) PR Radiator`;
 
   openPrView.classList.remove('hidden');
@@ -2834,18 +3237,25 @@ const cycleActiveTeam = () => {
   return true;
 };
 
+const canOpportunisticRefresh = () => {
+  if (!state.config.token || !state.config.owner) return false;
+  if (state.showRepoLinks || state.showShortlog) return false;
+  if (getActiveGitHubRateLimit().isCoolingDown) return false;
+  if (isShowingMine()) return !state.isFetchingMyPRs;
+  if (state.showRecentPRs) return !state.isFetchingRecentPRs && getVisibleRepos().length > 0;
+  return !state.isFetchingOpenPRs && getVisibleRepos().length > 0;
+};
+
 const init = () => {
   if (state.notifyNewPRs) {
     ensureNotificationServiceWorker().catch(() => {});
   }
 
   useInterval(() => {
-    const repos = getVisibleRepos();
-    if (state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showShortlog && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
-      refreshCurrentView().catch((error) => {
-        console.error('Error refreshing PRs on interval', error);
-      });
-    }
+    if (!canOpportunisticRefresh()) return;
+    refreshCurrentView().catch((error) => {
+      console.error('Error refreshing PRs on interval', error);
+    });
   }, 75000);
 
   if (!settingsForm.hasAttribute('data-initialized')) {
@@ -3075,6 +3485,42 @@ const init = () => {
         setState({ showDependabotPRs: !state.showDependabotPRs, selectedPrIndex: -1 });
         if (state.notifyNewPRs) baselineOpenPrUrls(state.PRs);
       },
+      D: () => {
+        const next = !state.showDrafts;
+        setState({ showDrafts: next, selectedPrIndex: -1 });
+        if (state.notifyNewPRs) baselineOpenPrUrls(state.PRs);
+        if (next && !state.isFetchingOpenPRs) {
+          ensureOpenDraftsHydrated().catch((error) => {
+            console.error('Error hydrating draft PRs', error);
+          });
+        }
+      },
+      u: () => {
+        cancelFetchesExcept(['mine', 'open', 'repos']);
+        const enable = !isShowingMine();
+        const updates = {
+          showMyPRs: enable,
+          showRecentPRs: false,
+          showRepoLinks: false,
+          showShortlog: false,
+          selectedRepoIndex: -1,
+          selectedPrIndex: -1,
+        };
+        if (enable && state.myOpenPRs.length === 0) {
+          const preview = previewMineFromOpenPRs();
+          if (preview.length) updates.myOpenPRs = preview;
+        }
+        setState(updates);
+        if (enable && !state.isFetchingMyPRs) {
+          fetchMyOpenPRs().catch((error) => {
+            console.error('Error fetching your PRs', error);
+          });
+        } else if (!enable) {
+          refreshCurrentView().catch((error) => {
+            console.error('Error refreshing open PRs', error);
+          });
+        }
+      },
       a: () => {
         setState({ showNeedsReviewPRs: !state.showNeedsReviewPRs, selectedPrIndex: -1 });
         if (state.notifyNewPRs) baselineOpenPrUrls(state.PRs);
@@ -3117,17 +3563,26 @@ const init = () => {
         localStorage.removeItem(STORAGE_KEYS.collaboratorPermissionCache);
         collaboratorPermissionCache = null;
         pendingPermissionLookups = null;
+        const refreshMine = state.showMyPRs
+          ? fetchMyOpenPRs({ force: true }).catch((error) => {
+            console.error('Error refreshing your PRs', error);
+          })
+          : Promise.resolve();
         refreshAllTeamRepos()
           .then((config) => {
             if (state.showShortlog) {
               return fetchShortlog({ force: true, forceRefreshMembers: true });
             }
-            return refreshCurrentView({
-              configOverride: config,
-              reposOverride: getAllConfiguredRepos(config),
-              merge: false,
-              force: true,
-            });
+            return Promise.all([
+              refreshMine,
+              refreshCurrentView({
+                configOverride: config,
+                reposOverride: getAllConfiguredRepos(config),
+                merge: false,
+                force: true,
+                list: 'open',
+              }),
+            ]);
           })
           .catch((error) => {
             console.error('Error refreshing team repositories', error);
@@ -3160,16 +3615,20 @@ const init = () => {
   });
 
   document.addEventListener('visibilitychange', () => {
-    const repos = getVisibleRepos();
-    if (document.visibilityState === 'visible' && state.config.token && state.config.owner && repos.length > 0 && !state.showRepoLinks && !state.showShortlog && !state.isFetchingOpenPRs && !state.isFetchingRecentPRs && !getActiveGitHubRateLimit().isCoolingDown) {
-      refreshCurrentView().catch((error) => {
-        console.error('Error refreshing PRs on tab focus', error);
-      });
-    }
+    if (document.visibilityState !== 'visible' || !canOpportunisticRefresh()) return;
+    refreshCurrentView().catch((error) => {
+      console.error('Error refreshing PRs on tab focus', error);
+    });
   });
 
   // Paint UI and bind keys before any network work so view switches never feel stuck.
   render();
+
+  if (state.config.token) {
+    fetchMyOpenPRs().catch((error) => {
+      console.error('Error prefetching your PRs', error);
+    });
+  }
 
   const hasRepos = getAllReposFromMappings(state.config.repos).length > 0;
   if (state.config.token && state.config.owner && hasRepos) {
