@@ -1,3 +1,5 @@
+import { collectRepoPipelineLinks } from './repo-pipelines.js';
+
 const sortByCreatedAt = (a, b) => a.createdAt.getTime() - b.createdAt.getTime();
 const sortByCommittedDateDesc = (a, b) => b.committedDate.getTime() - a.committedDate.getTime();
 
@@ -16,6 +18,7 @@ const STORAGE_KEYS = {
   activityOnSeparateLine: 'PR_RADIATOR_ACTIVITY_SEPARATE_LINE',
   notifyNewPRs: 'PR_RADIATOR_NOTIFY_NEW_PRS',
   myOpenPRs: 'PR_RADIATOR_MY_OPEN_PRS',
+  repoPipelines: 'PR_RADIATOR_REPO_PIPELINES',
 };
 
 const GRAPHQL_REPO_BATCH_SIZE = 2;
@@ -2542,6 +2545,7 @@ const initialState = {
   isFetchingMyPRs: false,
   isFetchingRecentPRs: false,
   isFetchingRepos: false,
+  isFetchingPipelines: false,
   githubRateLimit: {
     remaining: null,
     resetAt: null,
@@ -2867,6 +2871,10 @@ const applyConfig = async () => {
     repos: buildRepoMappings(teamSlugs),
   };
 
+  const ownerChanged = owner !== state.config.owner;
+  if (tokenChanged || ownerChanged) {
+    clearRepoPipelineCache();
+  }
   if (tokenChanged) {
     cancelFetch('mine');
     clearMyOpenPRsCache();
@@ -2993,6 +3001,201 @@ const renderShortlogView = () => {
   shortlogBody.innerHTML = warningBanner + tableHtml + prListHtml;
 };
 
+const PIPELINE_BATCH_SIZE = 8;
+const PIPELINE_FETCH_CONCURRENCY = 4;
+const PIPELINE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const PIPELINE_CACHE_VERSION = 2;
+const PIPELINE_HISTORY = 4;
+const PIPELINE_SUITES = 16;
+const PIPELINE_RUNS = 8;
+
+let repoPipelineCache = null;
+let pipelineFetch = { controller: null, generation: 0, scopeKey: '' };
+
+const pipelineCacheKey = (owner, repoName) => `${owner}/${repoName}`;
+
+const ensurePipelineCache = () => {
+  if (repoPipelineCache) return repoPipelineCache;
+  repoPipelineCache = new Map();
+  const raw = parseStoredJSON(STORAGE_KEYS.repoPipelines, null);
+  const owner = state.config.owner;
+  if (!raw || raw.version !== PIPELINE_CACHE_VERSION || raw.owner !== owner || !raw.repos || typeof raw.repos !== 'object') return repoPipelineCache;
+  Object.entries(raw.repos).forEach(([repoName, entry]) => {
+    if (!entry || !Array.isArray(entry.links)) return;
+    const links = entry.links.filter((link) => link && typeof link.url === 'string' && link.url.startsWith('https://'));
+    repoPipelineCache.set(pipelineCacheKey(owner, repoName), {
+      fetchedAt: Number(entry.fetchedAt) || 0,
+      links,
+    });
+  });
+  return repoPipelineCache;
+};
+
+const persistRepoPipelineCache = () => {
+  const owner = state.config.owner;
+  if (!owner) return;
+  const repos = {};
+  ensurePipelineCache().forEach((entry, key) => {
+    const prefix = `${owner}/`;
+    if (!key.startsWith(prefix)) return;
+    repos[key.slice(prefix.length)] = entry;
+  });
+  try {
+    localStorage.setItem(STORAGE_KEYS.repoPipelines, JSON.stringify({ version: PIPELINE_CACHE_VERSION, owner, repos }));
+  } catch (error) {
+    console.warn('Failed to persist pipeline cache', error);
+  }
+};
+
+const clearRepoPipelineCache = () => {
+  repoPipelineCache = new Map();
+  try {
+    localStorage.removeItem(STORAGE_KEYS.repoPipelines);
+  } catch (error) {
+    console.warn('Failed to clear pipeline cache', error);
+  }
+  pipelineFetch.generation += 1;
+  pipelineFetch.controller?.abort();
+  pipelineFetch.controller = null;
+  pipelineFetch.scopeKey = '';
+  if (state.isFetchingPipelines) setState({ isFetchingPipelines: false });
+};
+
+const isPipelineCacheFresh = (owner, repoName) => {
+  const entry = ensurePipelineCache().get(pipelineCacheKey(owner, repoName));
+  return Boolean(entry && (Date.now() - entry.fetchedAt) < PIPELINE_CACHE_TTL_MS);
+};
+
+const getCachedPipelineLinks = (owner, repoName) => (
+  ensurePipelineCache().get(pipelineCacheKey(owner, repoName))?.links || []
+);
+
+const escapeHtml = (value) => escapeAttr(value).replace(/>/g, '&gt;');
+
+const pipelineSlotKind = (kind) => {
+  if (kind === 'azure' || kind.startsWith('azure')) return 'azure';
+  if (kind === 'actions') return 'actions';
+  return 'other';
+};
+
+const pipelineLinksMarkup = (owner, repoName) => {
+  const grouped = { azure: [], actions: [], other: [] };
+  getCachedPipelineLinks(owner, repoName).forEach((link) => {
+    const kind = String(link.kind || 'other').toLowerCase().replace(/[^a-z0-9-]/g, '') || 'other';
+    const anchor = `<a class="repo-pipeline ${kind}" href="${escapeAttr(link.url)}" title="${escapeAttr(link.title || link.label || kind)}" target="_blank" rel="noopener noreferrer">${escapeHtml(link.label || kind)}</a>`;
+    grouped[pipelineSlotKind(kind)].push(anchor);
+  });
+  const slots = ['azure', 'actions', 'other'].map((slot) => (
+    `<span class="repo-pipeline-slot" data-kind="${slot}">${grouped[slot].join('')}</span>`
+  )).join('');
+  return `<span class="repo-pipelines">${slots}</span>`;
+};
+
+const paintPipelineLinks = () => {
+  if (!state.showRepoLinks) return;
+  const owner = state.config.owner;
+  repoList.querySelectorAll('.repo-item').forEach((item) => {
+    const repoName = item.dataset.repo;
+    if (!repoName) return;
+    const markup = pipelineLinksMarkup(owner, repoName);
+    const existing = item.querySelector(':scope > .repo-pipelines');
+    if (!existing) {
+      item.insertAdjacentHTML('beforeend', markup);
+      return;
+    }
+    existing.outerHTML = markup;
+  });
+};
+
+const buildRepoPipelinesQuery = (owner, repos) => {
+  const safeOwner = escapeGraphQLString(owner);
+  const batched = repos.map((repoName, index) => {
+    const alias = getShortGraphQLAlias(index);
+    const safeRepo = escapeGraphQLString(repoName);
+    return `${alias}:repository(owner:"${safeOwner}",name:"${safeRepo}"){name defaultBranchRef{target{...on Commit{history(first:${PIPELINE_HISTORY}){nodes{checkSuites(first:${PIPELINE_SUITES}){nodes{app{slug} checkRuns(first:${PIPELINE_RUNS}){nodes{name detailsUrl externalId}}}}}}}}} workflows:object(expression:"HEAD:.github/workflows"){...on Tree{entries{name}}}}`;
+  }).join(' ');
+  return `query{${graphqlCostFragment} ${batched}}`;
+};
+
+const mapPool = async (items, limit, fn) => {
+  if (items.length === 0) return;
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+};
+
+const fetchRepoPipelines = async ({ force = false } = {}) => {
+  const { token, owner } = state.config;
+  const repos = getVisibleRepos();
+  if (!token || !owner || repos.length === 0) return;
+  if (shouldPauseGitHubRefresh()) return;
+
+  const needed = force ? repos : repos.filter((repoName) => !isPipelineCacheFresh(owner, repoName));
+  if (needed.length === 0) return;
+
+  const scopeKey = `${owner}\n${repos.join('\n')}`;
+  if (!force && pipelineFetch.controller && pipelineFetch.scopeKey === scopeKey) return;
+
+  pipelineFetch.controller?.abort();
+  pipelineFetch.generation += 1;
+  const generation = pipelineFetch.generation;
+  const controller = new AbortController();
+  pipelineFetch = { controller, generation, scopeKey };
+  const isCurrent = () => pipelineFetch.generation === generation;
+  // Don't render the PR list just to flip this flag. The repo header is the only spinner.
+  if (state.showRepoLinks) setState({ isFetchingPipelines: true });
+  else state = { ...state, isFetchingPipelines: true };
+  const startedAt = performance.now();
+
+  try {
+    const chunks = chunkArray(needed, PIPELINE_BATCH_SIZE);
+    await mapPool(chunks, PIPELINE_FETCH_CONCURRENCY, async (chunk) => {
+      if (!isCurrent() || controller.signal.aborted) return;
+      let payload;
+      try {
+        payload = await api.fetchGraphQL(token, buildRepoPipelinesQuery(owner, chunk), {
+          type: 'repo-pipelines',
+          signal: controller.signal,
+        });
+      } catch (error) {
+        if (isAbortError(error) || !isCurrent()) return;
+        console.warn('Failed to fetch pipeline links', error);
+        return;
+      }
+      if (!isCurrent()) return;
+      const data = payload?.data || {};
+      const now = Date.now();
+      const cache = ensurePipelineCache();
+      chunk.forEach((repoName, index) => {
+        const alias = getShortGraphQLAlias(index);
+        if (!Object.prototype.hasOwnProperty.call(data, alias)) return;
+        cache.set(pipelineCacheKey(owner, repoName), {
+          fetchedAt: now,
+          links: collectRepoPipelineLinks(owner, repoName, data[alias]),
+        });
+      });
+      persistRepoPipelineCache();
+      paintPipelineLinks();
+    });
+  } finally {
+    if (isCurrent()) {
+      pipelineFetch.controller = null;
+      pipelineFetch.scopeKey = '';
+      if (state.showRepoLinks) setState({ isFetchingPipelines: false });
+      else state = { ...state, isFetchingPipelines: false };
+      if (shouldLogGraphQLCost()) {
+        console.log(`[pipelines] ${formatTiming(performance.now() - startedAt)} | repos: ${needed.length}`);
+      }
+    }
+  }
+};
+
 const render = () => {
   const {
     config: { token, owner, teams, repos },
@@ -3066,7 +3269,9 @@ const render = () => {
     prView.classList.add('hidden');
     renderCache.mode = 'repos';
 
-    const badgeEl = `(${visibleRepos.length})`;
+    const badgeEl = state.isFetchingPipelines
+      ? `(${visibleRepos.length}) <span class="fetching-spinner">${ICONS.hourglass}</span>`
+      : `(${visibleRepos.length})`;
     const repoSummaryParts = [];
     if (state.notifyNewPRs) repoSummaryParts.push('notify');
     if (scopeLabel) repoSummaryParts.push(scopeLabel);
@@ -3074,6 +3279,9 @@ const render = () => {
       ? `<span class="view-summary">— ${repoSummaryParts.join(' | ')}</span>`
       : '';
     repoHeader.innerHTML = `Repositories ${badgeEl}${summaryEl ? ` ${summaryEl}` : ''}`;
+    const repoNameCh = visibleRepos.reduce((max, repo) => Math.max(max, repo.length), 1);
+    repoList.style.setProperty('--repo-name-ch', String(repoNameCh));
+    repoList.classList.toggle('has-team-badges', showInlineTeamBadges);
 
     repoList.innerHTML = visibleRepos.map((repo, index) => {
       const isIgnored = isRepoIgnored(repo);
@@ -3089,8 +3297,9 @@ const render = () => {
             teamBadgeCache.set(badgeKey, teamBadges);
           }
         }
+        if (!teamBadges) teamBadges = '<span class="team-badges"></span>';
       }
-      return `<li class="${classes}" data-index="${index}" data-repo="${repo}">${teamBadges}<a href="https://github.com/${owner}/${repo}" target="_blank" rel="noopener noreferrer">${repo}</a></li>`;
+      return `<li class="${classes}" data-index="${index}" data-repo="${escapeAttr(repo)}">${teamBadges}<a href="${escapeAttr(`https://github.com/${owner}/${repo}`)}" target="_blank" rel="noopener noreferrer">${escapeHtml(repo)}</a>${pipelineLinksMarkup(owner, repo)}</li>`;
     }).join('');
 
     if (selectedRepoIndex >= 0) {
@@ -3387,6 +3596,14 @@ const init = () => {
               toggleIgnoreForRepo(repo);
             }
           },
+          p: () => {
+            if (visibleRepos.length === 0 || state.selectedRepoIndex < 0) return;
+            const repo = visibleRepos[state.selectedRepoIndex];
+            const links = getCachedPipelineLinks(state.config.owner, repo);
+            const primary = links.find((link) => link.kind === 'azure') || links[0];
+            if (!primary?.url) return;
+            window.open(primary.url, '_blank', 'noopener,noreferrer');
+          },
         }
       );
       if (handled) {
@@ -3460,6 +3677,9 @@ const init = () => {
           showShortlog: false,
           selectedRepoIndex: -1,
           selectedPrIndex: -1,
+        });
+        fetchRepoPipelines().catch((error) => {
+          console.error('Error fetching pipeline links', error);
         });
       },
       s: () => {
@@ -3540,6 +3760,12 @@ const init = () => {
       },
       r: () => {
         setState({ selectedPrIndex: -1, selectedRepoIndex: -1 });
+        if (state.showRepoLinks) {
+          fetchRepoPipelines({ force: true }).catch((error) => {
+            console.error('Error refreshing pipeline links', error);
+          });
+          return;
+        }
         if (state.showShortlog) {
           fetchShortlog({ force: true }).catch((error) => {
             console.error('Error refreshing shortlog', error);
@@ -3570,10 +3796,17 @@ const init = () => {
           : Promise.resolve();
         refreshAllTeamRepos()
           .then((config) => {
+            const pipelineRefresh = state.showRepoLinks
+              ? fetchRepoPipelines({ force: true })
+              : Promise.resolve();
             if (state.showShortlog) {
-              return fetchShortlog({ force: true, forceRefreshMembers: true });
+              return Promise.all([
+                pipelineRefresh,
+                fetchShortlog({ force: true, forceRefreshMembers: true }),
+              ]);
             }
             return Promise.all([
+              pipelineRefresh,
               refreshMine,
               refreshCurrentView({
                 configOverride: config,
@@ -3590,6 +3823,11 @@ const init = () => {
       },
       t: () => {
         cycleActiveTeam();
+        if (state.showRepoLinks) {
+          fetchRepoPipelines().catch((error) => {
+            console.error('Error fetching pipeline links', error);
+          });
+        }
         if (state.showShortlog) {
           setState({ shortlogData: null });
           fetchShortlog({ force: true }).catch((error) => {

@@ -420,6 +420,15 @@ a {
   margin: 0;
   padding: 0;
   list-style: none;
+  display: grid;
+  width: 100%;
+  column-gap: 8px;
+  row-gap: 0;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+}
+
+.repo-list.has-team-badges {
+  grid-template-columns: max-content max-content max-content minmax(0, 1fr);
 }
 
 .repo-list > li {
@@ -427,7 +436,7 @@ a {
 }
 
 .repo-item {
-  padding: 2px 8px;
+  padding: 2px 0;
   border-radius: 4px;
   transition: background-color 0.1s ease, transform 0.1s ease;
   scroll-margin-top: 28px;
@@ -437,16 +446,97 @@ a {
   box-sizing: border-box;
   background-color: #1d1f24;
   min-height: 18px;
-  display: flex;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: 8px;
   cursor: pointer;
   font-size: 12px;
 }
 
-.repo-item a {
+.repo-item > a {
+  grid-column: 1;
   color: #49a29f;
   text-decoration: none;
+  box-sizing: content-box;
+  width: calc(var(--repo-name-ch, 24) * 1ch + 1px);
+  padding-left: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-item > .team-badges {
+  grid-column: 1;
+  padding-left: 8px;
+}
+
+.repo-item > .repo-pipelines {
+  grid-column: 2;
+}
+
+.repo-item.ignored::after {
+  grid-column: 3;
+}
+
+.repo-list.has-team-badges .repo-item > a {
+  grid-column: 2;
+  padding-left: 0;
+}
+
+.repo-list.has-team-badges .repo-item > .repo-pipelines {
+  grid-column: 3;
+}
+
+.repo-list.has-team-badges .repo-item.ignored::after {
+  grid-column: 4;
+}
+
+.repo-pipelines {
+  display: grid;
+  grid-template-columns: 9ch 10ch max-content;
+  column-gap: 4px;
+  align-items: center;
+  justify-self: start;
+}
+
+.repo-pipeline-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.repo-pipeline {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 11px;
+  line-height: 1.4;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.repo-pipeline.azure {
+  background-color: #123044;
+  color: #79c0ff;
+}
+
+.repo-pipeline.actions,
+.repo-pipeline.circleci,
+.repo-pipeline.buildkite,
+.repo-pipeline.gitlab,
+.repo-pipeline.travis,
+.repo-pipeline.harness,
+.repo-pipeline.teamcity,
+.repo-pipeline.jenkins {
+  background-color: #2d333b;
+  color: #c9d1d9;
+}
+
+.repo-pipeline:hover {
+  text-decoration: underline;
 }
 
 .repo-item.selected {

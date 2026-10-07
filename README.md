@@ -5,6 +5,7 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 ## Features
 * Open PRs, merged PRs, shortlog, and repository views
 * Mine filter for your open PRs in any repo the token can access
+* Repo list links to Azure Pipelines or GitHub Actions, only for systems that repo uses
 * Mnemonic keyboard navigation and filters
 * GitHub team-based repository discovery
 * Browser-only setup with local configuration. GitHub PAT (`PR_RADIATOR_TOKEN`) required: `repo`, `read:org` scopes (+ SSO for orgs; press `c` to configure).
@@ -31,6 +32,7 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 
 ### Navigation
 * **Enter** - open
+* **p** - pipeline (repo view)
 * **G** - bottom
 * **gg** - top
 * **j/k** - down/up
@@ -40,5 +42,5 @@ Fast, local, keyboard-first GitHub PR dashboard for organization teams.
 * **c** - config
 * **Esc** - close config
 * **n** - new-PR notifications
-* **r** - refresh PRs
+* **r** - refresh current view
 * **R** - refresh repos
