@@ -3001,13 +3001,13 @@ const renderShortlogView = () => {
   shortlogBody.innerHTML = warningBanner + tableHtml + prListHtml;
 };
 
-const PIPELINE_BATCH_SIZE = 8;
+/** Repo-list CI links only. Open-PR discovery uses its own batch sizes. */
+const PIPELINE_BATCH_SIZE = 24;
 const PIPELINE_FETCH_CONCURRENCY = 4;
 const PIPELINE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
-const PIPELINE_CACHE_VERSION = 2;
-const PIPELINE_HISTORY = 4;
-const PIPELINE_SUITES = 16;
-const PIPELINE_RUNS = 8;
+const PIPELINE_CACHE_VERSION = 3;
+const PIPELINE_SUITES = 6;
+const PIPELINE_RUNS = 2;
 
 let repoPipelineCache = null;
 let pipelineFetch = { controller: null, generation: 0, scopeKey: '' };
@@ -3112,7 +3112,7 @@ const buildRepoPipelinesQuery = (owner, repos) => {
   const batched = repos.map((repoName, index) => {
     const alias = getShortGraphQLAlias(index);
     const safeRepo = escapeGraphQLString(repoName);
-    return `${alias}:repository(owner:"${safeOwner}",name:"${safeRepo}"){name defaultBranchRef{target{...on Commit{history(first:${PIPELINE_HISTORY}){nodes{checkSuites(first:${PIPELINE_SUITES}){nodes{app{slug} checkRuns(first:${PIPELINE_RUNS}){nodes{name detailsUrl externalId}}}}}}}}} workflows:object(expression:"HEAD:.github/workflows"){...on Tree{entries{name}}}}`;
+    return `${alias}:repository(owner:"${safeOwner}",name:"${safeRepo}"){name defaultBranchRef{target{...on Commit{checkSuites(first:${PIPELINE_SUITES}){nodes{app{slug} checkRuns(first:${PIPELINE_RUNS}){nodes{name detailsUrl externalId}}}}}}} workflows:object(expression:"HEAD:.github/workflows"){...on Tree{entries{name}}}}`;
   }).join(' ');
   return `query{${graphqlCostFragment} ${batched}}`;
 };

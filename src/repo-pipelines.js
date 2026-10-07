@@ -140,7 +140,8 @@ export const collectRepoPipelineLinks = (owner, repoName, repoData) => {
     links.set(link.key, link);
   }
 
-  const commits = repoData.defaultBranchRef?.target?.history?.nodes || [];
+  const target = repoData.defaultBranchRef?.target;
+  const commits = target?.history?.nodes || (target?.checkSuites ? [target] : []);
   commits.forEach((commit) => {
     (commit?.checkSuites?.nodes || []).forEach((suite) => {
       const slug = suite?.app?.slug || '';
